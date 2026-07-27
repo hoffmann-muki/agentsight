@@ -11,6 +11,7 @@ use futures::stream::Stream;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::time;
@@ -26,6 +27,12 @@ pub struct SystemConfig {
     pub comm: Option<String>,
     /// Session ID to monitor (None = monitor by pid/comm/system-wide)
     pub session_id: Option<u32>,
+    /// Cgroup path to monitor (None = monitor by pid/comm/session/system-wide)
+    pub cgroup: Option<String>,
+    /// Include descendant cgroups.
+    pub cgroup_children: bool,
+    /// PID namespace inode to monitor (None = monitor by another selector)
+    pub pid_namespace: Option<u64>,
     /// Include child processes in aggregation
     pub include_children: bool,
     /// CPU usage threshold for alerts (%)
@@ -41,6 +48,9 @@ impl Default for SystemConfig {
             pid: None,
             comm: None,
             session_id: None,
+            cgroup: None,
+            cgroup_children: false,
+            pid_namespace: None,
             include_children: true,
             cpu_threshold: None,
             memory_threshold: None,
@@ -85,6 +95,30 @@ impl SystemRunner {
     pub fn session(mut self, session_id: u32) -> Self {
         self.config.session_id = Some(session_id);
         self
+    }
+
+    /// Monitor processes in a cgroup.
+    pub fn cgroup(mut self, cgroup: impl Into<String>) -> Self {
+        self.config.cgroup = Some(normalize_cgroup_path(&cgroup.into()));
+        self
+    }
+
+    /// Include processes in descendant cgroups.
+    pub fn cgroup_children(mut self, include: bool) -> Self {
+        self.config.cgroup_children = include;
+        self
+    }
+
+    /// Monitor every process in the PID namespace referenced by `path`.
+    pub fn pid_namespace(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, RunnerError> {
+        self.config.pid_namespace = Some(
+            fs::metadata(path)
+                .map_err(|error| {
+                    RunnerError::from(format!("failed to resolve PID namespace: {error}"))
+                })?
+                .ino(),
+        );
+        Ok(self)
     }
 
     /// Include child processes in metrics aggregation
@@ -172,6 +206,40 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
                 continue;
             }
 
+            if let Some(cgroup) = config.cgroup.as_deref() {
+                let pids = pids_in_cgroup(&snapshot, cgroup, config.cgroup_children);
+                if let Some(main_pid) = pids.first().copied()
+                    && let Ok(event) = collect_process_metrics(
+                        main_pid,
+                        &pids,
+                        timestamp,
+                        &mut previous_stats,
+                        &config,
+                        &snapshot,
+                    )
+                {
+                    yield event;
+                }
+                continue;
+            }
+
+            if let Some(pid_namespace) = config.pid_namespace {
+                let pids = pids_in_pid_namespace(&snapshot, pid_namespace);
+                if let Some(main_pid) = pids.first().copied()
+                    && let Ok(event) = collect_process_metrics(
+                        main_pid,
+                        &pids,
+                        timestamp,
+                        &mut previous_stats,
+                        &config,
+                        &snapshot,
+                    )
+                {
+                    yield event;
+                }
+                continue;
+            }
+
             // Find target PIDs to monitor
             let target_pids = find_target_pids(&config, &snapshot);
 
@@ -210,6 +278,63 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
             }
         }
     })
+}
+
+fn pids_in_pid_namespace(snapshot: &ProcSnapshot, target_inode: u64) -> Vec<u32> {
+    let mut pids = snapshot
+        .procs
+        .keys()
+        .copied()
+        .filter(|pid| {
+            fs::metadata(format!("/proc/{pid}/ns/pid"))
+                .ok()
+                .is_some_and(|metadata| metadata.ino() == target_inode)
+        })
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids
+}
+
+fn pids_in_cgroup(snapshot: &ProcSnapshot, cgroup: &str, include_children: bool) -> Vec<u32> {
+    let mut pids = snapshot
+        .procs
+        .keys()
+        .copied()
+        .filter(|pid| {
+            std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+                .ok()
+                .is_some_and(|content| {
+                    content.lines().any(|line| {
+                        let Some(path) = line.rsplit(':').next() else {
+                            return false;
+                        };
+                        path == cgroup
+                            || (include_children
+                                && cgroup != "/"
+                                && path
+                                    .strip_prefix(cgroup)
+                                    .is_some_and(|suffix| suffix.starts_with('/')))
+                            || (include_children && cgroup == "/")
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids
+}
+
+fn normalize_cgroup_path(path: &str) -> String {
+    let path = path
+        .strip_prefix("/sys/fs/cgroup")
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    if path.is_empty() {
+        return "/".to_string();
+    }
+    if path.starts_with('/') {
+        return path.to_string();
+    }
+    format!("/{path}")
 }
 
 /// Process statistics for CPU calculation
@@ -460,6 +585,16 @@ mod tests {
         assert!(!runner.config.include_children);
         assert_eq!(runner.config.cpu_threshold, Some(80.0));
         assert_eq!(runner.config.memory_threshold, Some(500));
+    }
+
+    #[test]
+    fn pid_namespace_selects_current_process() {
+        let snapshot = ProcSnapshot::collect().unwrap();
+        let inode = fs::metadata(format!("/proc/{}/ns/pid", std::process::id()))
+            .unwrap()
+            .ino();
+
+        assert!(pids_in_pid_namespace(&snapshot, inode).contains(&std::process::id()));
     }
 
     #[tokio::test]

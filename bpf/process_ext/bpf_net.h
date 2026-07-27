@@ -26,28 +26,10 @@ static __always_inline void read_and_format_sockaddr(struct trace_event_raw_sys_
 	format_ipv4_port(detail, detail_len, ip, port);
 }
 
-/* Write "family=N" into buf */
+/* Write "family=N" into buf. */
 static __always_inline void format_family(char *buf, int buf_len, u16 family)
 {
-	/* "family=" prefix */
-	if (buf_len < 8) return;
-	__builtin_memcpy(buf, "family=", 7);
-	/* Use format_fd_detail trick for the number */
-	int pos = 7;
-	char digits[6];
-	int dlen = 0;
-	unsigned int f = family;
-	if (f == 0) {
-		digits[dlen++] = '0';
-	} else {
-		while (f > 0 && dlen < 5) {
-			digits[dlen++] = '0' + (f % 10);
-			f /= 10;
-		}
-	}
-	for (int i = dlen - 1; i >= 0 && pos < buf_len - 1; i--)
-		buf[pos++] = digits[i];
-	buf[pos] = '\0';
+	BPF_SNPRINTF(buf, buf_len, "family=%u", family);
 }
 
 SEC("tp/syscalls/sys_enter_bind")

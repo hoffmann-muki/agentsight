@@ -31,6 +31,7 @@ mod cmd_perf_tui;
 mod cmd_trace;
 mod cmd_tui_record;
 mod output;
+mod profile;
 mod server;
 mod sources;
 mod state;
@@ -52,6 +53,7 @@ use cmd_trace::{
 };
 use output::TopOptions;
 use output::{print_record_session_db_error, print_report_local_sessions_warning};
+use profile::{CaptureLevel, ProfileConfig};
 use sources::session_db::{latest_session_db, run_db_list};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -251,16 +253,58 @@ enum Commands {
     /// Examples: sudo agentsight record -- claude     (or)  sudo agentsight record -c claude
     Record {
         /// Process command filter, e.g. claude, codex, node, python
-        #[arg(short = 'c', long, conflicts_with = "pid")]
+        #[arg(short = 'c', long, conflicts_with_all = ["pid", "session_id", "cgroup_filter", "pidns_filter"])]
         comm: Option<String>,
         /// Process PID filter
-        #[arg(short = 'p', long, conflicts_with = "comm")]
+        #[arg(short = 'p', long, conflicts_with_all = ["comm", "session_id", "cgroup_filter", "pidns_filter"])]
         pid: Option<u32>,
+        /// Process session ID filter
+        #[arg(long, conflicts_with_all = ["comm", "pid", "cgroup_filter", "pidns_filter"])]
+        session_id: Option<u32>,
+        /// Cgroup path filter for process and resource capture
+        #[arg(long, conflicts_with_all = ["comm", "pid", "session_id", "pidns_filter"])]
+        cgroup_filter: Option<String>,
+        /// Include descendant cgroups
+        #[arg(long, requires = "cgroup_filter")]
+        cgroup_filter_children: bool,
+        /// PID namespace handle for process and resource capture, e.g. /proc/PID/ns/pid
+        #[arg(long, conflicts_with_all = ["comm", "pid", "session_id", "cgroup_filter"])]
+        pidns_filter: Option<String>,
         /// Binary path or container ref to monitor (e.g., /usr/bin/node, docker://name, k8s://ns/pod/container)
         #[arg(long)]
         binary_path: Option<String>,
-        /// SQLite database path for view snapshots
+        /// Scope TLS capture by --binary-path instead of the process target PID
+        #[arg(long, requires = "binary_path")]
+        tls_binary_only: bool,
+        /// Capture preset; research adds filesystem, network, signal, and shared-memory activity
+        #[arg(long, value_enum, default_value = "standard")]
+        capture_level: CaptureLevel,
+        /// Also capture copy-on-write page faults (high overhead)
         #[arg(long)]
+        trace_cow: bool,
+        /// Disable TLS and HTTP capture
+        #[arg(long)]
+        no_ssl: bool,
+        /// Disable bounded stdio capture
+        #[arg(long)]
+        no_stdio: bool,
+        /// Disable CPU and memory sampling
+        #[arg(long)]
+        no_system: bool,
+        /// Write a self-contained collector profile into this directory
+        #[arg(long)]
+        profile_dir: Option<PathBuf>,
+        /// Correlation ID stored in profile artifacts
+        #[arg(long, requires = "profile_dir")]
+        profile_id: Option<String>,
+        /// Collector-plane scope ID, such as host or task-container
+        #[arg(long, requires = "profile_dir")]
+        scope_id: Option<String>,
+        /// Write a JSON readiness acknowledgement after every probe is attached
+        #[arg(long, requires = "profile_dir")]
+        ready_file: Option<PathBuf>,
+        /// SQLite database path for view snapshots
+        #[arg(long, conflicts_with = "profile_dir")]
         db: Option<String>,
         /// Disable the web server
         #[arg(long)]
@@ -724,40 +768,95 @@ async fn run_with_extractor(
         Commands::Record {
             comm,
             pid,
+            session_id,
+            cgroup_filter,
+            cgroup_filter_children,
+            pidns_filter,
             binary_path,
+            tls_binary_only,
+            capture_level,
+            trace_cow,
+            no_ssl,
+            no_stdio,
+            no_system,
+            profile_dir,
+            profile_id,
+            scope_id,
+            ready_file,
             db,
             no_server,
             server_port,
             command,
         } => {
+            let research = matches!(capture_level, CaptureLevel::Research);
+            let mut cfg = TraceConfig {
+                ssl: !*no_ssl,
+                pid: *pid,
+                session_id: *session_id,
+                comm: comm.clone(),
+                process: true,
+                process_trace_fs: research,
+                process_trace_net: research,
+                process_trace_signals: research,
+                process_trace_mem: research,
+                process_trace_cow: *trace_cow,
+                cgroup_filter: cgroup_filter.clone(),
+                cgroup_filter_children: *cgroup_filter_children,
+                pid_namespace_filter: pidns_filter.clone(),
+                stdio: !*no_stdio && pid.is_some(),
+                stdio_max_bytes: cmd_trace::DEFAULT_RECORD_STDIO_MAX_BYTES,
+                system: !*no_system,
+                system_interval: 2,
+                ssl_http: true,
+                binary_path: binary_path.clone(),
+                tls_binary_only: *tls_binary_only,
+                db_path: configured_db_path(db),
+                profile: profile_dir.clone().map(|directory| {
+                    ProfileConfig::new(
+                        directory,
+                        profile_id.clone(),
+                        scope_id.clone(),
+                        *capture_level,
+                        ready_file.clone(),
+                    )
+                }),
+                quiet: true,
+                server: !*no_server,
+                server_listen: Some(cli.listen.clone()),
+                server_port: *server_port,
+                ..Default::default()
+            };
             if !command.is_empty() {
-                if comm.is_some() || pid.is_some() {
+                if comm.is_some()
+                    || pid.is_some()
+                    || session_id.is_some()
+                    || cgroup_filter.is_some()
+                    || pidns_filter.is_some()
+                {
                     return Err(
-                        "record accepts either -- <command> or -c/--comm/-p/--pid, not both".into(),
+                        "record accepts either -- <command> or an attach target, not both".into(),
                     );
                 }
-                run_exec(
-                    binary_extractor,
-                    command,
-                    binary_path.as_deref(),
-                    configured_db_path(db),
-                    !*no_server,
-                    &cli.listen,
-                    *server_port,
-                    true,
-                )
-                .await
-                .map_err(convert_runner_error)?;
+                cfg.stdio = !*no_stdio;
+                run_exec(binary_extractor, command, cfg, true)
+                    .await
+                    .map_err(convert_runner_error)?;
                 return Ok(());
             }
-            if comm.is_none() && pid.is_none() {
+            if comm.is_none()
+                && pid.is_none()
+                && session_id.is_none()
+                && cgroup_filter.is_none()
+                && pidns_filter.is_none()
+            {
                 return Err(
-                    "record requires either a command (`agentsight record -- claude`) or an attach target (`-c <comm>` / `-p <pid>`)"
+                    "record requires either a command or an attach target (--comm, --pid, --session-id, --cgroup-filter, or --pidns-filter)"
                         .into(),
                 );
             }
-            let db_path = match configured_db_path(db) {
+            let db_path = match cfg.db_path.clone() {
                 Some(path) => Some(path),
+                None if cfg.profile.is_some() => None,
                 None => match default_session_db_path() {
                     Ok(path) => Some(path),
                     Err(e) => {
@@ -767,17 +866,7 @@ async fn run_with_extractor(
                 },
             };
             let db_path_for_summary = db_path.clone();
-            let cfg = TraceConfig {
-                pid: *pid,
-                comm: comm.clone(),
-                stdio: pid.is_some(),
-                binary_path: binary_path.clone(),
-                db_path,
-                server: !*no_server,
-                server_listen: Some(cli.listen.clone()),
-                server_port: *server_port,
-                ..TraceConfig::for_record()
-            };
+            let cfg = TraceConfig { db_path, ..cfg };
             run_trace(binary_extractor, cfg)
                 .await
                 .map_err(convert_runner_error)?;
@@ -969,6 +1058,23 @@ mod tests {
     fn top_rejects_saved_db_mode() {
         assert!(
             <Cli as clap::Parser>::try_parse_from(["agentsight", "top", "--db", "run.db"]).is_err()
+        );
+    }
+
+    #[test]
+    fn profile_rejects_external_database_path() {
+        assert!(
+            <Cli as clap::Parser>::try_parse_from([
+                "agentsight",
+                "record",
+                "--pid",
+                "42",
+                "--profile-dir",
+                "profile",
+                "--db",
+                "outside.db",
+            ])
+            .is_err()
         );
     }
 }

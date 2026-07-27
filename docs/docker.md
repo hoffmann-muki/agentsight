@@ -42,3 +42,6 @@ Adjust `/claude/versions/2.1.39` to the version installed on the host.
 - A normal unprivileged Docker container cannot load eBPF probes or inspect host processes.
 - Docker's default seccomp profile can block eBPF-related syscalls; `--privileged` avoids that for local testing and CI runners where this is acceptable.
 - Captured SQLite databases can contain prompts, responses, file paths, headers, and network targets. Treat saved session databases as sensitive.
+- For network-isolated sidecars, PID-namespace targeting, readiness/health
+  artifacts, and benchmark-harness integration, see
+  [Research Profiling](research-profiling.md).

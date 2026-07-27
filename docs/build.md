@@ -4,7 +4,7 @@ Use this guide when developing AgentSight or building a local binary from the re
 
 ## Requirements
 
-- Linux with eBPF support
+- Linux with eBPF support (5.13+ for the current process profiler)
 - Rust toolchain 1.88.0+
 - Node.js 18+
 - clang and LLVM
@@ -43,6 +43,12 @@ make build
 vendored assets embedded by the Rust binary. The frontend build id is stable for
 the same source inputs, so repeated builds do not create new hashed asset paths
 unless the frontend source or configuration changed.
+
+The eBPF loaders include ordinary userspace launchers and therefore inherit the
+build host's glibc baseline. Build release and redistributable loaders on the
+oldest supported userspace, currently Ubuntu 22.04 (glibc 2.35), rather than on
+a newer development host. Kernel CO-RE portability does not remove this
+userspace ABI requirement.
 
 The built binary is at:
 

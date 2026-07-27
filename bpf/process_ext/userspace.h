@@ -77,6 +77,18 @@ static inline bool resolve_cgroup_id_from_path(const char *cgroup_path, uint64_t
 	return true;
 }
 
+static inline bool resolve_namespace_inode(const char *path, uint32_t *out_inode)
+{
+	if (!path || !path[0] || !out_inode)
+		return false;
+
+	struct stat st;
+	if (stat(path, &st) != 0 || st.st_ino > UINT32_MAX)
+		return false;
+	*out_inode = (uint32_t)st.st_ino;
+	return true;
+}
+
 static inline void clear_u64_set_map(int map_fd)
 {
 	uint64_t key = 0, next_key = 0;

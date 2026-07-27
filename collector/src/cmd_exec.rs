@@ -8,8 +8,8 @@ use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{resolve_binary_path, resolve_binary_path_for_ssl};
 use crate::cli_db::load_agentsight_view;
 use crate::cmd_trace::{
-    TraceConfig, build_trace_agent_with_view, drain_stream_for, prepare_process_seeds,
-    start_web_server_if_enabled,
+    TraceConfig, build_trace_agent_with_view, drain_stream_for, finish_profile,
+    prepare_process_seeds, prepare_profile, start_web_server_if_enabled,
 };
 use crate::output::{
     SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
@@ -76,11 +76,7 @@ pub(crate) fn print_session_summary(db_path: &str) {
 pub(crate) async fn run_exec(
     binary_extractor: &BinaryExtractor,
     command: &[String],
-    binary_path_override: Option<&str>,
-    db_path: Option<String>,
-    enable_server: bool,
-    server_listen: &str,
-    server_port: u16,
+    mut cfg: TraceConfig,
     print_summary: bool,
 ) -> Result<Option<String>, RunnerError> {
     let program = command.first().ok_or_else(|| {
@@ -89,8 +85,8 @@ pub(crate) async fn run_exec(
     let prog_args = &command[1..];
 
     // Auto-create a session database when the user didn't specify --db.
-    let db_path = if db_path.is_some() {
-        db_path
+    let db_path = if cfg.db_path.is_some() || cfg.profile.is_some() {
+        cfg.db_path.clone()
     } else {
         match default_session_db_path() {
             Ok(p) => Some(p),
@@ -103,7 +99,7 @@ pub(crate) async fn run_exec(
 
     print_record_header();
 
-    let ssl_binary_path = match binary_path_override {
+    let ssl_binary_path = match cfg.binary_path.as_deref() {
         Some(p) => {
             print_record_provided_binary_path(p);
             Some(p.to_string())
@@ -182,32 +178,44 @@ pub(crate) async fn run_exec(
     print_record_attribution_session(child_pid);
 
     let db_path_for_summary = db_path.clone();
-    let mut cfg = TraceConfig {
-        pid: Some(child_pid),
-        session_id: Some(child_pid),
-        stdio: true,
-        binary_path: ssl_binary_path,
-        db_path,
-        server_listen: Some(server_listen.to_string()),
-        ..TraceConfig::for_record()
-    };
+    cfg.pid = Some(child_pid);
+    cfg.session_id = Some(child_pid);
+    cfg.binary_path = ssl_binary_path;
+    cfg.db_path = db_path;
 
+    let mut profile = prepare_profile(&mut cfg)?;
     prepare_process_seeds(&mut cfg)?;
     let live_view = MaterializedView::shared_bounded();
-    let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
+    let built = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
+    let evidence_stats = built.evidence_stats.clone();
+    let mut agent = built.agent;
 
-    let server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view, None)
-            .await
-            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let server_handle = start_web_server_if_enabled(
+        cfg.server,
+        cfg.server_listen
+            .as_deref()
+            .unwrap_or(crate::cmd_trace::DEFAULT_SERVER_LISTEN),
+        cfg.server_port,
+        live_view,
+        None,
+    )
+    .await
+    .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     let mut stream = match agent.run().await {
         Ok(stream) => stream,
         Err(e) => {
             stop_child(&mut child).await;
+            drop(agent);
+            finish_profile(profile, evidence_stats, Some(&e.to_string()))?;
             return Err(e);
         }
     };
+    if let Some(profile) = profile.as_mut() {
+        profile.mark_ready().map_err(|error| {
+            RunnerError::from(format!("failed to mark profile ready: {}", error))
+        })?;
+    }
 
     if let Some(server) = &server_handle {
         print_record_web_ui(&server.url);
@@ -261,6 +269,7 @@ pub(crate) async fn run_exec(
     }
     drop(stream);
     drop(agent);
+    finish_profile(profile, evidence_stats, None)?;
 
     print_global_http_filter_metrics();
     print_global_ssl_filter_metrics();

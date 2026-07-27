@@ -79,7 +79,8 @@ AgentSight captures critical interactions that application-level tools miss:
 
 ### Prerequisites
 
-- **Linux kernel**: 4.1+ with eBPF support (5.0+ recommended)
+- **Linux kernel**: 4.1+ for legacy eBPF paths; the current process profiler
+  requires 5.13+
 - **sudo access**: optional for `top`; eBPF is enabled automatically when sudo is already available
 
 For source builds, see [docs/build.md](https://github.com/eunomia-bpf/agentsight/blob/master/docs/build.md).
@@ -107,6 +108,8 @@ Docker is useful for container, CI, or isolated Linux environments, but it still
 #### Build from Source
 
 Build requirements and source build commands live in [docs/build.md](https://github.com/eunomia-bpf/agentsight/blob/master/docs/build.md).
+For benchmark and agent-harness integration, see
+[Research Profiling](https://github.com/eunomia-bpf/agentsight/blob/master/docs/research-profiling.md).
 
 ### Replay a Repository Session
 

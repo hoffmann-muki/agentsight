@@ -5,8 +5,8 @@ use futures::stream::StreamExt;
 use tokio::sync::oneshot;
 
 use crate::analyzers::{
-    AuthHeaderRemover, HTTPDecompressor, HTTPFilter, HTTPParser, MaterializingAnalyzer,
-    SSEProcessor, SSLFilter, TimestampNormalizer,
+    AuthHeaderRemover, EvidenceJournal, EvidenceStatsHandle, HTTPDecompressor, HTTPFilter,
+    HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter, TimestampNormalizer,
 };
 use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{resolve_binary_path_for_ssl, resolve_container_binary_arg};
@@ -15,6 +15,7 @@ use crate::output::{
     print_trace_shutdown, print_trace_ssl_binary_discovered, print_trace_start,
     print_web_server_error, print_web_server_start,
 };
+use crate::profile::{ProfileConfig, ProfileSession, ProfileSources, ProfileTarget};
 use crate::runners::common::runner_error_from_event;
 use crate::runners::{
     AgentRunner, BinaryRunner, EventStream, ProcessRunner, Runner, RunnerError, SystemRunner,
@@ -61,6 +62,14 @@ pub(crate) struct TraceConfig {
     pub(crate) ssl_raw_data: bool,
     pub(crate) process: bool,
     pub(crate) process_seed_pids: Vec<PidSeed>,
+    pub(crate) process_trace_fs: bool,
+    pub(crate) process_trace_net: bool,
+    pub(crate) process_trace_signals: bool,
+    pub(crate) process_trace_mem: bool,
+    pub(crate) process_trace_cow: bool,
+    pub(crate) cgroup_filter: Option<String>,
+    pub(crate) cgroup_filter_children: bool,
+    pub(crate) pid_namespace_filter: Option<String>,
     pub(crate) stdio: bool,
     pub(crate) stdio_uid: Option<u32>,
     pub(crate) stdio_comm: Option<String>,
@@ -75,11 +84,18 @@ pub(crate) struct TraceConfig {
     pub(crate) otel: Option<OtelConfig>,
     /// SSL binary path; may be a container ref that `run_trace` resolves in place.
     pub(crate) binary_path: Option<String>,
+    pub(crate) tls_binary_only: bool,
     pub(crate) db_path: Option<String>,
+    pub(crate) profile: Option<ProfileConfig>,
     pub(crate) quiet: bool,
     pub(crate) server: bool,
     pub(crate) server_listen: Option<String>,
     pub(crate) server_port: u16,
+}
+
+pub(crate) struct BuiltTraceAgent {
+    pub(crate) agent: AgentRunner,
+    pub(crate) evidence_stats: Option<EvidenceStatsHandle>,
 }
 
 impl TraceConfig {
@@ -141,7 +157,11 @@ pub(crate) fn build_stdio_args(
 }
 
 pub(crate) fn prepare_process_seeds(cfg: &mut TraceConfig) -> Result<(), RunnerError> {
-    if !cfg.process || !cfg.process_seed_pids.is_empty() {
+    if !cfg.process
+        || !cfg.process_seed_pids.is_empty()
+        || cfg.cgroup_filter.is_some()
+        || cfg.pid_namespace_filter.is_some()
+    {
         return Ok(());
     }
 
@@ -161,7 +181,7 @@ pub(crate) fn build_trace_agent_with_view(
     binary_extractor: &BinaryExtractor,
     cfg: &TraceConfig,
     view: SharedMaterializedView,
-) -> Result<AgentRunner, RunnerError> {
+) -> Result<BuiltTraceAgent, RunnerError> {
     let mut agent = AgentRunner::new();
 
     if cfg.ssl {
@@ -229,6 +249,14 @@ pub(crate) fn build_trace_agent_with_view(
         if let Some(session_filter) = cfg.session_id {
             system_runner = system_runner.session(session_filter);
         }
+        if let Some(cgroup_filter) = cfg.cgroup_filter.as_deref() {
+            system_runner = system_runner
+                .cgroup(cgroup_filter)
+                .cgroup_children(cfg.cgroup_filter_children);
+        }
+        if let Some(pid_namespace_filter) = cfg.pid_namespace_filter.as_deref() {
+            system_runner = system_runner.pid_namespace(pid_namespace_filter)?;
+        }
         system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
         agent = agent.add_runner(Box::new(system_runner));
@@ -256,12 +284,34 @@ pub(crate) fn build_trace_agent_with_view(
     }
     agent = agent.add_global_analyzer(Box::new(materializer));
 
-    Ok(agent)
+    let evidence_stats = if let Some(profile) = cfg.profile.as_ref() {
+        let (journal, stats) = EvidenceJournal::open(
+            profile.evidence_path(),
+            &profile.profile_id,
+            &profile.scope_id,
+        )
+        .map_err(|error| {
+            RunnerError::from(format!(
+                "failed to open evidence journal '{}': {}",
+                profile.evidence_path().display(),
+                error
+            ))
+        })?;
+        agent = agent.add_global_analyzer(Box::new(journal));
+        Some(stats)
+    } else {
+        None
+    };
+
+    Ok(BuiltTraceAgent {
+        agent,
+        evidence_stats,
+    })
 }
 
 fn build_ssl_args(cfg: &TraceConfig) -> Vec<String> {
     let mut args = Vec::new();
-    if cfg.session_id.is_none() {
+    if cfg.session_id.is_none() && !cfg.tls_binary_only {
         if let Some(pid) = cfg.pid {
             args.extend(["-p".to_string(), pid.to_string()]);
         }
@@ -305,7 +355,72 @@ fn build_process_args(cfg: &TraceConfig) -> Vec<String> {
     if let Some(mode) = cfg.mode {
         args.extend(["-m".to_string(), mode.to_string()]);
     }
+    if cfg.process_trace_fs {
+        args.push("--trace-fs".to_string());
+    }
+    if cfg.process_trace_net {
+        args.push("--trace-net".to_string());
+    }
+    if cfg.process_trace_signals {
+        args.push("--trace-signals".to_string());
+    }
+    if cfg.process_trace_mem {
+        args.push("--trace-mem".to_string());
+    }
+    if cfg.process_trace_cow {
+        args.push("--trace-cow".to_string());
+    }
+    if let Some(cgroup_filter) = cfg.cgroup_filter.as_deref() {
+        args.extend(["--cgroup-filter".to_string(), cgroup_filter.to_string()]);
+    }
+    if cfg.cgroup_filter_children {
+        args.push("--cgroup-filter-children".to_string());
+    }
+    if let Some(pid_namespace_filter) = cfg.pid_namespace_filter.as_deref() {
+        args.extend([
+            "--pidns-filter".to_string(),
+            pid_namespace_filter.to_string(),
+        ]);
+    }
     args
+}
+
+pub(crate) fn prepare_profile(
+    cfg: &mut TraceConfig,
+) -> Result<Option<ProfileSession>, RunnerError> {
+    let Some(profile) = cfg.profile.clone() else {
+        return Ok(None);
+    };
+    if cfg.db_path.is_none() {
+        cfg.db_path = Some(profile.database_path().to_string_lossy().into_owned());
+    }
+    ProfileSession::start(
+        profile,
+        ProfileTarget {
+            pid: cfg.pid,
+            session_id: cfg.session_id,
+            comm: cfg.comm.clone(),
+            cgroup: cfg.cgroup_filter.clone(),
+            pid_namespace: cfg.pid_namespace_filter.clone(),
+            binary_path: cfg.binary_path.clone(),
+            tls_binary_only: cfg.tls_binary_only,
+        },
+        ProfileSources {
+            tls: cfg.ssl,
+            process: cfg.process,
+            stdio: cfg.stdio,
+            system: cfg.system,
+            filesystem: cfg.process_trace_fs,
+            network: cfg.process_trace_net,
+            signals: cfg.process_trace_signals,
+            memory: cfg.process_trace_mem,
+            copy_on_write: cfg.process_trace_cow,
+            stdio_max_bytes: cfg.stdio_max_bytes,
+            system_interval_seconds: cfg.system_interval,
+        },
+    )
+    .map(Some)
+    .map_err(|error| RunnerError::from(format!("failed to initialize profile: {}", error)))
 }
 
 /// Trace monitoring with configurable runners and analyzers
@@ -352,9 +467,12 @@ pub(crate) async fn run_trace(
         .to_string();
     let server_port = cfg.server_port;
 
+    let mut profile = prepare_profile(&mut cfg)?;
     prepare_process_seeds(&mut cfg)?;
     let live_view = MaterializedView::shared_bounded();
-    let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
+    let built = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
+    let evidence_stats = built.evidence_stats.clone();
+    let mut agent = built.agent;
 
     print_trace_start(agent.runner_count(), agent.analyzer_count());
 
@@ -364,14 +482,46 @@ pub(crate) async fn run_trace(
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
-    let mut stream = agent.run().await?;
+    let mut stream = match agent.run().await {
+        Ok(stream) => stream,
+        Err(error) => {
+            drop(agent);
+            finish_profile(profile, evidence_stats, Some(&error.to_string()))?;
+            return Err(error);
+        }
+    };
+    if let Some(profile) = profile.as_mut() {
+        profile.mark_ready().map_err(|error| {
+            RunnerError::from(format!("failed to mark profile ready: {}", error))
+        })?;
+    }
 
     // Drive the stream so the analyzer chain (file logging, storage, etc.) runs.
-    drive_stream_until_shutdown(&mut stream, !cfg.quiet).await?;
+    let result = drive_stream_until_shutdown(&mut stream, !cfg.quiet).await;
     drop(stream);
     drop(agent);
+    let error = result.as_ref().err().map(ToString::to_string);
+    finish_profile(profile, evidence_stats, error.as_deref())?;
 
-    Ok(())
+    result
+}
+
+pub(crate) fn finish_profile(
+    profile: Option<ProfileSession>,
+    evidence_stats: Option<EvidenceStatsHandle>,
+    error: Option<&str>,
+) -> Result<(), RunnerError> {
+    let Some(profile) = profile else {
+        return Ok(());
+    };
+    profile
+        .finish(
+            evidence_stats
+                .map(|stats| stats.snapshot())
+                .unwrap_or_default(),
+            error,
+        )
+        .map_err(|error| RunnerError::from(format!("failed to finalize profile: {}", error)))
 }
 
 pub(crate) async fn start_web_server_if_enabled(
@@ -505,7 +655,7 @@ pub(crate) async fn run_trace_silent_until_cancel(
 
     prepare_process_seeds(&mut cfg)?;
     let live_view = MaterializedView::shared_bounded();
-    let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
+    let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?.agent;
     let server = start_web_server_silent_if_enabled(
         enable_server,
         &server_listen,
@@ -649,4 +799,35 @@ pub(crate) async fn run_debug_runner<R: Runner>(
     let mut stream = runner.run().await?;
     drive_stream_until_shutdown(&mut stream, !quiet).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_args_include_pid_namespace_filter() {
+        let cfg = TraceConfig {
+            pid_namespace_filter: Some("/proc/42/ns/pid".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            build_process_args(&cfg),
+            ["--pidns-filter", "/proc/42/ns/pid"]
+        );
+    }
+
+    #[test]
+    fn hard_kernel_targets_do_not_seed_userspace_pid_filters() {
+        let mut cfg = TraceConfig {
+            process: true,
+            pid_namespace_filter: Some("/proc/42/ns/pid".to_string()),
+            ..Default::default()
+        };
+
+        prepare_process_seeds(&mut cfg).unwrap();
+
+        assert!(cfg.process_seed_pids.is_empty());
+    }
 }

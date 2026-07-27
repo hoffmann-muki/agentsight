@@ -77,6 +77,8 @@ static struct env {
 	char cgroup_filter_path[256];
 	bool cgroup_filter_enabled;
 	bool cgroup_filter_children;
+	char pid_namespace_path[256];
+	bool pid_namespace_filter_enabled;
 } env = {
 	.verbose = false,
 	.min_duration_ms = 0,
@@ -106,7 +108,8 @@ const char argp_program_doc[] =
 	"\n"
 	"USAGE: ./process [-d <min-duration-ms>] [-c <command1,command2,...>] [-p <pid>] [--session <sid>] [-m <mode>] [-v]\n"
 	"       [--trace-fs] [--trace-net] [--trace-signals] [--trace-mem] [--trace-cow] [--trace-all]\n"
-	"       [--cgroup-filter <path>] [--cgroup-filter-children] [--seed-pid <pid:ppid>]\n"
+	"       [--cgroup-filter <path>] [--cgroup-filter-children] [--pidns-filter <path>]\n"
+	"       [--seed-pid <pid:ppid>]\n"
 	"\n"
 	"FILTER MODES:\n"
 	"  0 (all):    Trace all processes and all read/write operations\n"
@@ -132,6 +135,7 @@ enum {
 	OPT_TRACE_ALL,
 	OPT_CGROUP_FILTER,
 	OPT_CGROUP_FILTER_CHILDREN,
+	OPT_PID_NAMESPACE_FILTER,
 	OPT_SEED_PID,
 };
 
@@ -151,6 +155,7 @@ static const struct argp_option opts[] = {
 	{ "trace-all", OPT_TRACE_ALL, NULL, 0, "Enable all tracing except --trace-cow" },
 	{ "cgroup-filter", OPT_CGROUP_FILTER, "PATH", 0, "Hard filter by cgroup v2 path" },
 	{ "cgroup-filter-children", OPT_CGROUP_FILTER_CHILDREN, NULL, 0, "Include descendants of --cgroup-filter path" },
+	{ "pidns-filter", OPT_PID_NAMESPACE_FILTER, "PATH", 0, "Hard filter by PID namespace handle (for example /proc/PID/ns/pid)" },
 	{ "seed-pid", OPT_SEED_PID, "PID[:PPID]", 0, "Seed an existing tracked PID supplied by the collector" },
 	{},
 };
@@ -287,6 +292,11 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_CGROUP_FILTER_CHILDREN:
 		env.cgroup_filter_children = true;
+		break;
+	case OPT_PID_NAMESPACE_FILTER:
+		strncpy(env.pid_namespace_path, arg, sizeof(env.pid_namespace_path) - 1);
+		env.pid_namespace_path[sizeof(env.pid_namespace_path) - 1] = '\0';
+		env.pid_namespace_filter_enabled = true;
 		break;
 	case OPT_SEED_PID:
 		if (env.seed_count >= MAX_SEED_PIDS) {
@@ -916,6 +926,17 @@ int main(int argc, char **argv)
 	skel->rodata->filter_cgroup_children = env.cgroup_filter_children;
 	skel->rodata->target_cgroup_id = cgroup_filter_id;
 
+	uint32_t pid_namespace_inode = 0;
+	if (env.pid_namespace_filter_enabled &&
+	    !resolve_namespace_inode(env.pid_namespace_path, &pid_namespace_inode)) {
+		fprintf(stderr, "Failed to resolve PID namespace filter path: %s\n",
+		        env.pid_namespace_path);
+		err = -EINVAL;
+		goto cleanup;
+	}
+	skel->rodata->filter_pid_namespace = env.pid_namespace_filter_enabled;
+	skel->rodata->target_pid_namespace = pid_namespace_inode;
+
 	/* Load & verify BPF programs */
 	err = process_bpf__load(skel);
 	if (err) {
@@ -947,10 +968,12 @@ int main(int argc, char **argv)
 	if (env.verbose) {
 		fprintf(stderr, "Loaded process: trace_fs=%d trace_net=%d trace_signals=%d "
 			"trace_mem=%d trace_cow=%d filter_pids=%d filter_cgroup=%d "
-			"filter_cgroup_children=%d cgroup_id=%llu seed_pids=%d seeded_tracked=%d\n",
+			"filter_cgroup_children=%d cgroup_id=%llu pidns_inode=%u "
+			"seed_pids=%d seeded_tracked=%d\n",
 			env.trace_fs, env.trace_net, env.trace_signals,
 			env.trace_mem, env.trace_cow, need_pid_filter, need_cgroup_filter,
 			env.cgroup_filter_children, (unsigned long long)cgroup_filter_id,
+			pid_namespace_inode,
 			env.seed_count, tracked_count);
 	}
 

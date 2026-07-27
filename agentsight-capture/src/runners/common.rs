@@ -311,20 +311,16 @@ impl BinaryExecutor {
             .iter()
             .any(|arg| arg == "--binary-path")
         {
-            Some(1500)
-        } else if needs_sudo {
-            Some(200)
+            1500
         } else {
-            None
+            500
         };
-        if let Some(delay_ms) = startup_delay_ms {
-            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-            if let Some(status) = child.try_wait()? {
-                let label = runner_name.as_deref().unwrap_or("binary");
-                return Err(RunnerError::from(runner_startup_exit_message(
-                    label, status, needs_sudo,
-                )));
-            }
+        tokio::time::sleep(tokio::time::Duration::from_millis(startup_delay_ms)).await;
+        if let Some(status) = child.try_wait()? {
+            let label = runner_name.as_deref().unwrap_or("binary");
+            return Err(RunnerError::from(runner_startup_exit_message(
+                label, status, needs_sudo,
+            )));
         }
 
         let stream = async_stream::stream! {
