@@ -159,20 +159,27 @@ A benchmark integration should:
 
 Host and task-container scopes are separate on Docker Desktop and WSL because
 they observe different Linux execution planes. OpenCode runs the coding agent
-inside the task container, so one container scope is sufficient. OpenHands and
-Hermes perform harness/model work on the host and repository work in the task
-container in the SWE-bench integrations, so those integrations use both
-scopes. In Harbor-backed Terminal-Bench integrations, all three frameworks run
+inside the task container, so one container scope is sufficient. In SWE-bench,
+OpenHands keeps orchestration on the host but runs its agent-server, provider
+client, and repository tools in the task container. Hermes keeps its
+coordinator and provider client on the host while repository tools run in the
+task container. Both integrations therefore use both scopes. In Harbor-backed
+Terminal-Bench integrations, all three frameworks run
 their coding agent and provider client inside Harbor's `main` task container.
 Those integrations therefore use one PID-namespace sidecar per attempt, with
 no redundant host collector. The sidecar starts after container setup, reports
 matching readiness before agent work, and stops before Harbor teardown.
 OpenCode keeps TLS/HTTP capture enabled and narrows static attachment to its
-exact installed binary. OpenHands and Hermes resolve the dynamic `libssl`
-loaded by their exact Python runtime with one short local probe, then attach
-that inode through `/proc/<task-pid>/root`. In all three cases, the TLS probe is
-restricted to Harbor's task PID namespace. Namespace-wide stdio remains
-disabled.
+exact installed binary. OpenHands SWE-bench and all Terminal-Bench adapters
+resolve the TLS-bearing binary used by their exact container Python runtime
+with one short local probe: its loaded `libssl`, or the Python executable when
+OpenSSL is statically embedded. They attach that inode through
+`/proc/<task-pid>/root`, and restrict the TLS probe to the task PID namespace.
+Hermes SWE-bench resolves and pins the equivalent binary used by its host
+worker instead. Namespace-wide stdio remains disabled.
+On Docker Desktop and WSL, the target path is validated inside the task
+container and dereferenced inside the PID-host sidecar; it is not expected to
+be visible in the harness host's `/proc` namespace.
 
 When the semantic trace itself is finalized inside the task container, the
 harness may stage AgentSight output in the trial log and attach it during

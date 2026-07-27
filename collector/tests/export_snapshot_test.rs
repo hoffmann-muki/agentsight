@@ -187,6 +187,25 @@ fn report_exports_one_scope_aware_snapshot_for_multi_scope_profile() {
     assert_eq!(rows[1]["scope_id"], "task-container");
 }
 
+#[test]
+fn report_summary_uses_top_level_multi_scope_profile() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_profile_source(temp.path(), "host", 1_000);
+    write_profile_source(temp.path(), "task-container", 2_000);
+
+    let output = agentsight_output(&[
+        "report",
+        "--profile-dir",
+        temp.path().to_str().unwrap(),
+        "summary",
+    ]);
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(stdout.contains("scopes host, task-container"), "{stdout}");
+    assert!(!stderr.contains("using local agent sessions"), "{stderr}");
+}
+
 fn write_profile_source(root: &std::path::Path, scope_id: &str, timestamp_ms: u64) {
     let directory = root.join("sources").join(scope_id);
     std::fs::create_dir_all(&directory).unwrap();

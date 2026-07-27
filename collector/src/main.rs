@@ -646,11 +646,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         } => agentvis::run_vis(path, outputs, *global, *compact_rate)?,
         Commands::Report { db, local, sub } => match sub {
             None | Some(ReportCommands::Summary { .. }) => {
-                let (db_ref, local_ref) = match sub {
-                    Some(ReportCommands::Summary { db: d, local: l }) => (d, l),
-                    _ => (db, local),
+                let (effective, local_ref) = match sub {
+                    Some(ReportCommands::Summary { db: d, local: l }) => {
+                        (d.as_ref().or(db.as_ref()).cloned(), *l || *local)
+                    }
+                    _ => (db.clone(), *local),
                 };
-                let resolved = report_db_or_local(db_ref, *local_ref);
+                let resolved = report_db_or_local(&effective, local_ref);
                 run_db_summary(resolved.as_deref())?;
             }
             Some(ReportCommands::Token {
