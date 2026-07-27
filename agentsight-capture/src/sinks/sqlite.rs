@@ -319,6 +319,7 @@ impl SqliteStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], move |row| {
             Ok(TokenUsageRow {
+                scope_id: None,
                 id: row.get(0)?,
                 llm_call_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 timestamp_ms: row.get::<_, i64>(2)? as u64,
@@ -365,6 +366,7 @@ impl SqliteStore {
             let input_json: Option<String> = row.get(10)?;
             let output_json: Option<String> = row.get(11)?;
             Ok(ToolCallRow {
+                scope_id: None,
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 conversation_id: row.get(2)?,
@@ -399,6 +401,7 @@ impl SqliteStore {
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ResourceSampleRow {
+                scope_id: None,
                 timestamp_ms: row.get::<_, i64>(0)? as u64,
                 pid: row.get::<_, Option<i64>>(1)?.map(|v| v as u32),
                 comm: row.get(2)?,
@@ -417,6 +420,7 @@ impl SqliteStore {
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(NetworkTargetRow {
+                scope_id: None,
                 pid: row.get::<_, Option<i64>>(0)?.map(|v| v as u32),
                 comm: row.get(1)?,
                 host: row.get(2)?,
@@ -458,6 +462,7 @@ impl SqliteStore {
         let rows = stmt.query_map([], move |row| {
             let argv_json: String = row.get(8)?;
             Ok(ProcessNodeRow {
+                scope_id: None,
                 id: row.get(0)?,
                 pid: row.get::<_, i64>(1)? as u32,
                 ppid: row.get::<_, Option<i64>>(2)?.map(|v| v as u32),
@@ -517,6 +522,7 @@ fn read_llm_call_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmCallRow> {
     let request_json: String = row.get(16)?;
     let response_json: String = row.get(17)?;
     Ok(LlmCallRow {
+        scope_id: None,
         id: row.get(0)?,
         session_id: row.get(1)?,
         conversation_id: row.get(2)?,
@@ -546,6 +552,7 @@ fn read_llm_call_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmCallRow> {
 fn read_audit_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEventRow> {
     let details_json: String = row.get(10)?;
     Ok(AuditEventRow {
+        scope_id: None,
         id: row.get(0)?,
         timestamp_ms: row.get::<_, i64>(1)? as u64,
         audit_type: row.get(2)?,

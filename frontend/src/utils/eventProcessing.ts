@@ -14,6 +14,7 @@ import { decodeStdioMessage, isStdioSource } from './stdioParser';
 
 export interface DisplayEvent {
   id: string;
+  scopeId: string;
   timestamp: number;
   source: string;
   pid: number;
@@ -28,6 +29,7 @@ export interface DisplayEvent {
 
 interface RawDisplayEvent {
   id: string;
+  scopeId: string;
   timestamp: number;
   source: string;
   pid: number;
@@ -97,16 +99,18 @@ export function formatDisplayEventSummary(event: DisplayEvent): string {
 
 export function filterDisplayEvents(
   events: DisplayEvent[],
-  filters: { source?: string; comm?: string; pid?: string; searchTerm?: string },
+  filters: { scope?: string; source?: string; comm?: string; pid?: string; searchTerm?: string },
 ): DisplayEvent[] {
   const term = filters.searchTerm?.toLowerCase();
   return events.filter(event => {
+    if (filters.scope && event.scopeId !== filters.scope) return false;
     if (filters.source && event.source !== filters.source) return false;
     if (filters.comm && event.comm !== filters.comm) return false;
     if (filters.pid && event.pid.toString() !== filters.pid) return false;
     if (!term) return true;
     return [
       event.source,
+      event.scopeId,
       event.id,
       event.comm,
       String(event.pid),
@@ -130,6 +134,7 @@ function decorateEvents(events: RawDisplayEvent[]): DisplayEvent[] {
     const datetime = new Date(event.timestamp);
     return {
       ...event,
+      id: `${event.scopeId}:${event.id}`,
       datetime,
       formattedTime: `${datetime.toLocaleTimeString('en-US', {
         hour12: false,
@@ -149,6 +154,7 @@ function auditEvent(row: SnapshotAuditEvent): RawDisplayEvent {
   const target = row.target ?? stringValue(details.path) ?? stringValue(details.filepath);
   return {
     id: row.id,
+    scopeId: row.scope_id ?? 'default',
     timestamp: row.timestamp_ms,
     source: row.audit_type,
     pid: row.pid ?? 0,
@@ -172,6 +178,7 @@ function auditEvent(row: SnapshotAuditEvent): RawDisplayEvent {
 function processEvent(row: SnapshotProcessNode): RawDisplayEvent {
   return {
     id: `process-node-${row.id}`,
+    scopeId: row.scope_id ?? 'default',
     timestamp: row.start_timestamp_ms ?? row.end_timestamp_ms ?? 0,
     source: 'process_node',
     pid: row.pid,
@@ -185,6 +192,7 @@ function networkEvent(row: SnapshotNetworkTarget, index: number): RawDisplayEven
   const target = `${row.host}${row.path ?? ''}`;
   return {
     id: `network-${row.pid ?? 0}-${row.host}-${row.path ?? ''}-${index}`,
+    scopeId: row.scope_id ?? 'default',
     timestamp: row.last_timestamp_ms ?? row.first_timestamp_ms ?? 0,
     source: 'network',
     pid: row.pid ?? 0,
@@ -197,6 +205,7 @@ function networkEvent(row: SnapshotNetworkTarget, index: number): RawDisplayEven
 function resourceEvent(row: SnapshotResourceSample, index: number): RawDisplayEvent {
   return {
     id: `resource-${row.pid ?? 0}-${row.timestamp_ms}-${index}`,
+    scopeId: row.scope_id ?? 'default',
     timestamp: row.timestamp_ms,
     source: 'system',
     pid: row.pid ?? 0,
@@ -213,6 +222,7 @@ function resourceEvent(row: SnapshotResourceSample, index: number): RawDisplayEv
 function sessionEvent(row: SnapshotSession): RawDisplayEvent {
   return {
     id: `session-${row.id}`,
+    scopeId: row.scope_id ?? 'default',
     timestamp: row.end_timestamp_ms ?? row.start_timestamp_ms,
     source: 'session',
     pid: 0,
@@ -225,6 +235,7 @@ function sessionEvent(row: SnapshotSession): RawDisplayEvent {
 function toolEvent(row: SnapshotToolCall): RawDisplayEvent {
   return {
     id: `tool-${row.id}`,
+    scopeId: row.scope_id ?? 'default',
     timestamp: row.timestamp_ms,
     source: 'tool',
     pid: row.related_pid ?? 0,

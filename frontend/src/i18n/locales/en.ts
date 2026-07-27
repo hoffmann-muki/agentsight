@@ -21,6 +21,7 @@ export const en = {
   'modal.eventDetails': 'Event Details',
   'modal.id': 'ID',
   'modal.source': 'Source',
+  'modal.scope': 'Capture Scope',
   'modal.process': 'Process',
   'modal.pid': 'PID',
   'modal.time': 'Time',
@@ -37,6 +38,8 @@ export const en = {
 
   // Filters (EventFilters.tsx)
   'filter.searchEvents': 'Search events...',
+  'filter.allScopes': 'All Scopes',
+  'filter.scope': 'Capture Scope',
   'filter.allSources': 'All Sources',
   'filter.allProcesses': 'All Processes',
   'filter.allPids': 'All PIDs',

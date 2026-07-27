@@ -219,6 +219,7 @@ impl SessionSummary {
         }
         Ok(Self {
             source: s.source.clone(),
+            source_scopes: snap.source_scopes.clone(),
             duration_s: s.duration_s(),
             api_calls: s.llm_calls,
             total_tokens: s.total_tokens,
@@ -396,6 +397,7 @@ mod tests {
         }
 
         view.emit_tool_call(crate::model::ToolCallRow {
+            scope_id: None,
             id: "tool-1".to_string(),
             session_id: None,
             conversation_id: None,

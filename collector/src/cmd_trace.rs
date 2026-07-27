@@ -84,6 +84,8 @@ pub(crate) struct TraceConfig {
     pub(crate) otel: Option<OtelConfig>,
     /// SSL binary path; may be a container ref that `run_trace` resolves in place.
     pub(crate) binary_path: Option<String>,
+    /// Restrict TLS events to processes in this PID namespace.
+    pub(crate) tls_pid_namespace_filter: Option<String>,
     pub(crate) tls_binary_only: bool,
     pub(crate) db_path: Option<String>,
     pub(crate) profile: Option<ProfileConfig>,
@@ -334,6 +336,9 @@ fn build_ssl_args(cfg: &TraceConfig) -> Vec<String> {
     }
     if let Some(path) = cfg.binary_path.as_deref() {
         args.extend(["--binary-path".to_string(), path.to_string()]);
+    }
+    if let Some(path) = cfg.tls_pid_namespace_filter.as_deref() {
+        args.extend(["--pidns-filter".to_string(), path.to_string()]);
     }
     args
 }
@@ -815,6 +820,26 @@ mod tests {
         assert_eq!(
             build_process_args(&cfg),
             ["--pidns-filter", "/proc/42/ns/pid"]
+        );
+    }
+
+    #[test]
+    fn ssl_args_include_an_independent_pid_namespace_filter() {
+        let cfg = TraceConfig {
+            binary_path: Some("/proc/42/root/usr/lib/libssl.so.3".to_string()),
+            tls_binary_only: true,
+            tls_pid_namespace_filter: Some("/proc/42/ns/pid".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            build_ssl_args(&cfg),
+            [
+                "--binary-path",
+                "/proc/42/root/usr/lib/libssl.so.3",
+                "--pidns-filter",
+                "/proc/42/ns/pid",
+            ]
         );
     }
 

@@ -264,6 +264,7 @@ pub(crate) struct AgentTopOutput {
 
 pub(crate) struct SessionSummary {
     pub(crate) source: String,
+    pub(crate) source_scopes: Vec<String>,
     pub(crate) duration_s: f64,
     pub(crate) api_calls: i64,
     pub(crate) total_tokens: i64,
@@ -524,13 +525,14 @@ pub(crate) fn print_token_summary(group_by: &str, rows: &[TokenSummary]) {
 pub(crate) fn print_audit_rows(rows: &[AuditEventRow]) {
     println!("Audit events");
     println!(
-        "{:<15} {:<10} {:<8} {:<16} {:<10} {:<28} summary",
-        "timestamp_ms", "type", "pid", "comm", "status", "target"
+        "{:<15} {:<16} {:<10} {:<8} {:<16} {:<10} {:<28} summary",
+        "timestamp_ms", "scope", "type", "pid", "comm", "status", "target"
     );
     for row in rows {
         println!(
-            "{:<15} {:<10} {:<8} {:<16} {:<10} {:<28} {}",
+            "{:<15} {:<16} {:<10} {:<8} {:<16} {:<10} {:<28} {}",
             row.timestamp_ms,
+            truncate(row.scope_id.as_deref().unwrap_or("-"), 16),
             row.audit_type,
             row.pid
                 .map(|v| v.to_string())
@@ -546,13 +548,14 @@ pub(crate) fn print_audit_rows(rows: &[AuditEventRow]) {
 pub(crate) fn print_llm_prompts(rows: &[LlmCallRow]) {
     println!("LLM prompts");
     println!(
-        "{:<15} {:<16} {:<28} {:>8} prompt",
-        "timestamp_ms", "comm", "model", "tokens"
+        "{:<15} {:<16} {:<16} {:<28} {:>8} prompt",
+        "timestamp_ms", "scope", "comm", "model", "tokens"
     );
     for row in rows {
         println!(
-            "{:<15} {:<16} {:<28} {:>8} {}",
+            "{:<15} {:<16} {:<16} {:<28} {:>8} {}",
             row.start_timestamp_ms,
+            truncate(row.scope_id.as_deref().unwrap_or("-"), 16),
             truncate(row.comm.as_deref().unwrap_or("-"), 16),
             truncate(row.model.as_deref().unwrap_or("-"), 28),
             row.total_tokens,
@@ -650,6 +653,9 @@ pub(crate) fn print_session_summary(summary: &SessionSummary) {
     }
     if has_tokens {
         print!(" · {} tokens", summary.total_tokens);
+    }
+    if !summary.source_scopes.is_empty() {
+        print!(" · scopes {}", summary.source_scopes.join(", "));
     }
     println!("\n");
 

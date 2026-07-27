@@ -17,6 +17,7 @@ interface LogViewProps {
 export function LogView({ events }: LogViewProps) {
   const { t } = useTranslation();
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedScope, setSelectedScope] = useState<string>('');
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [selectedComm, setSelectedComm] = useState<string>('');
   const [selectedPid, setSelectedPid] = useState<string>('');
@@ -25,12 +26,13 @@ export function LogView({ events }: LogViewProps) {
   // Filter events based on search, source, comm, and pid
   const filteredEvents = useMemo(() => {
     return filterDisplayEvents(events, {
+      scope: selectedScope,
       source: selectedSource,
       comm: selectedComm,
       pid: selectedPid,
       searchTerm
     });
-  }, [events, searchTerm, selectedSource, selectedComm, selectedPid]);
+  }, [events, searchTerm, selectedScope, selectedSource, selectedComm, selectedPid]);
 
   return (
     <div className="bg-white rounded-lg shadow-md">
@@ -38,10 +40,12 @@ export function LogView({ events }: LogViewProps) {
       <div className="border-b border-gray-200 p-4">
         <EventFilters
           events={events}
+          selectedScope={selectedScope}
           selectedSource={selectedSource}
           selectedComm={selectedComm}
           selectedPid={selectedPid}
           searchTerm={searchTerm}
+          onScopeChange={setSelectedScope}
           onSourceChange={setSelectedSource}
           onCommChange={setSelectedComm}
           onPidChange={setSelectedPid}

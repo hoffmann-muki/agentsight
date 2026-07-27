@@ -50,6 +50,8 @@ struct {
 
 const volatile pid_t targ_pid = 0;
 const volatile uid_t targ_uid = -1;
+const volatile __u64 targ_pidns_dev = 0;
+const volatile __u64 targ_pidns_ino = 0;
 
 #define MAX_RUSTLS_IOVECS 2
 #define RUSTLS_COPY_CHUNK_SIZE (16 * 1024)
@@ -72,6 +74,17 @@ static __always_inline bool trace_allowed(u32 uid, u32 pid)
         if (targ_uid != uid) {
             return false;
         }
+    }
+    if (targ_pidns_ino) {
+        struct bpf_pidns_info namespace = {};
+
+        if (bpf_get_ns_current_pid_tgid(
+                targ_pidns_dev,
+                targ_pidns_ino,
+                &namespace,
+                sizeof(namespace)) != 0
+            || namespace.pid == 0)
+            return false;
     }
     return true;
 }

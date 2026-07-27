@@ -68,7 +68,10 @@ docker run --detach \
 The sidecar needs no network when the web UI and exporters are disabled. TLS
 capture can be enabled for a statically linked agent binary by making the
 binary visible through `/proc/<task-pid>/root`, passing it with
-`--binary-path`, and adding `--tls-binary-only`.
+`--binary-path`, and adding `--tls-binary-only`. When `--pidns-filter` is also
+present, AgentSight applies that namespace boundary to TLS events as well as
+process and resource events. This permits a sidecar to attach an exact
+container `libssl` without observing other host or container workloads.
 
 The current process probes used by profiles require Linux 5.13 or newer. The
 collector also needs root or equivalent eBPF privileges. For an unprivileged host
@@ -114,6 +117,35 @@ finalization, health is marked failed. A hard process or machine failure can
 leave the compressed evidence stream incomplete; `capture.db`, collector logs,
 and the harness-native trace remain independent recovery evidence.
 
+## Unified multi-scope view
+
+Keep host and task-container captures as separate evidence databases. To inspect
+them together, point any report command at the aggregate profile directory
+instead of an individual `capture.db`:
+
+```bash
+agentsight report --profile-dir ./attempt/profiles/agentsight summary
+agentsight report --profile-dir ./attempt/profiles/agentsight audit --limit 500
+agentsight report --profile-dir ./attempt/profiles/agentsight export \
+  --output ./unified-snapshot.json
+agentsight report --profile-dir ./attempt/profiles/agentsight serve
+```
+
+`--profile-dir` is an explicit alias for `--db`; both accept either a single
+SQLite database or a profile directory. AgentSight discovers
+`sources/*/capture.db`, validates that each source manifest has the same profile
+identity and a scope matching its directory, and merges the materialized views
+in memory. It does not rewrite or duplicate the evidence databases.
+
+Every merged row retains `scope_id`, and row identity is the pair
+`(scope_id, id)`. PID relationships are likewise resolved within a scope, so a
+host PID and an unrelated container PID with the same number remain distinct.
+Both collectors normalize kernel timestamps to Unix-epoch milliseconds before
+persistence; the unified timeline therefore preserves real overlap and does
+not serialize concurrent activity. The web timeline exposes scope lanes and a
+scope filter, while the process tree and resource view keep scope-local process
+identity.
+
 ## Harness integration
 
 A benchmark integration should:
@@ -129,7 +161,24 @@ Host and task-container scopes are separate on Docker Desktop and WSL because
 they observe different Linux execution planes. OpenCode runs the coding agent
 inside the task container, so one container scope is sufficient. OpenHands and
 Hermes perform harness/model work on the host and repository work in the task
-container, so their integrations use both scopes.
+container in the SWE-bench integrations, so those integrations use both
+scopes. In Harbor-backed Terminal-Bench integrations, all three frameworks run
+their coding agent and provider client inside Harbor's `main` task container.
+Those integrations therefore use one PID-namespace sidecar per attempt, with
+no redundant host collector. The sidecar starts after container setup, reports
+matching readiness before agent work, and stops before Harbor teardown.
+OpenCode keeps TLS/HTTP capture enabled and narrows static attachment to its
+exact installed binary. OpenHands and Hermes resolve the dynamic `libssl`
+loaded by their exact Python runtime with one short local probe, then attach
+that inode through `/proc/<task-pid>/root`. In all three cases, the TLS probe is
+restricted to Harbor's task PID namespace. Namespace-wide stdio remains
+disabled.
+
+When the semantic trace itself is finalized inside the task container, the
+harness may stage AgentSight output in the trial log and attach it during
+canonical trace promotion. The aggregate profile should carry explicit
+run/benchmark/framework/instance/attempt correlation rather than depending on
+directory names or timestamps alone.
 
 Profiling should be best-effort by default and report its own health without
 changing benchmark success or retry decisions. A harness may offer an explicit

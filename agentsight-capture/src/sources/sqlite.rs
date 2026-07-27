@@ -6,6 +6,7 @@ use crate::sinks::sqlite::SqliteStore;
 use crate::sources::agent_native;
 use crate::text::{clean_prompt_text, extract_prompt_text, truncate_text};
 use crate::view::MaterializedView;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -24,6 +25,16 @@ pub fn load_view_with_observed_session_prompts(
 
 fn load_view_inner(
     path: impl AsRef<Path>,
+    include_observed_session_prompts: bool,
+) -> ViewResult<MaterializedView> {
+    if path.as_ref().is_dir() {
+        return load_profile_view(path.as_ref(), include_observed_session_prompts);
+    }
+    load_database_view(path.as_ref(), include_observed_session_prompts)
+}
+
+fn load_database_view(
+    path: &Path,
     include_observed_session_prompts: bool,
 ) -> ViewResult<MaterializedView> {
     let store = SqliteStore::open_readonly(path)?;
@@ -99,6 +110,166 @@ fn load_view_inner(
     Ok(view)
 }
 
+#[derive(Deserialize)]
+struct CaptureProfileManifest {
+    profile_id: String,
+    scope_id: String,
+}
+
+fn load_profile_view(
+    directory: &Path,
+    include_observed_session_prompts: bool,
+) -> ViewResult<MaterializedView> {
+    if directory.join("capture.db").is_file() {
+        let manifest = read_capture_manifest(directory)?;
+        let source = load_database_view(
+            &directory.join("capture.db"),
+            include_observed_session_prompts,
+        )?;
+        let mut view = MaterializedView::new();
+        view.set_source(format!("agentsight_profile:{}", manifest.profile_id));
+        view.merge_scoped_from(source, &manifest.scope_id);
+        return Ok(view);
+    }
+
+    let sources = directory.join("sources");
+    if !sources.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "'{}' is neither a capture database nor an AgentSight profile directory",
+                directory.display()
+            ),
+        )
+        .into());
+    }
+
+    let mut entries = std::fs::read_dir(&sources)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut profile_id = read_aggregate_profile_id(directory)?;
+    let mut view = MaterializedView::new();
+    let mut loaded = 0usize;
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "AgentSight profile source cannot be a symbolic link: {}",
+                    entry.path().display()
+                ),
+            )
+            .into());
+        }
+        if !file_type.is_dir() || !entry.path().join("capture.db").is_file() {
+            continue;
+        }
+        let manifest = read_capture_manifest(&entry.path())?;
+        let directory_scope = entry.file_name().to_string_lossy().to_string();
+        if manifest.scope_id != directory_scope {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "AgentSight source scope '{}' does not match directory '{}'",
+                    manifest.scope_id, directory_scope
+                ),
+            )
+            .into());
+        }
+        if profile_id
+            .as_ref()
+            .is_some_and(|profile_id| profile_id != &manifest.profile_id)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "AgentSight profile sources have conflicting profile IDs",
+            )
+            .into());
+        }
+        profile_id.get_or_insert_with(|| manifest.profile_id.clone());
+        let source = load_database_view(
+            &entry.path().join("capture.db"),
+            include_observed_session_prompts,
+        )?;
+        view.merge_scoped_from(source, &manifest.scope_id);
+        loaded += 1;
+    }
+    if loaded == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "AgentSight profile '{}' has no captured source databases",
+                directory.display()
+            ),
+        )
+        .into());
+    }
+    view.set_source(format!(
+        "agentsight_profile:{}",
+        profile_id.unwrap_or_else(|| "unknown".to_string())
+    ));
+    Ok(view)
+}
+
+fn read_capture_manifest(directory: &Path) -> ViewResult<CaptureProfileManifest> {
+    let path = directory.join("profile.json");
+    let manifest: CaptureProfileManifest =
+        serde_json::from_slice(&std::fs::read(&path)?).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "invalid AgentSight capture manifest '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+    if manifest.profile_id.is_empty()
+        || manifest.scope_id.is_empty()
+        || manifest.scope_id.contains(['/', '\\', '\0'])
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid AgentSight capture identity in '{}'",
+                path.display()
+            ),
+        )
+        .into());
+    }
+    Ok(manifest)
+}
+
+fn read_aggregate_profile_id(directory: &Path) -> ViewResult<Option<String>> {
+    let path = directory.join("profile.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_slice(&std::fs::read(&path)?).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid AgentSight aggregate manifest '{}': {error}",
+                path.display()
+            ),
+        )
+    })?;
+    let profile_id = value
+        .get("profileId")
+        .or_else(|| value.get("profile_id"))
+        .and_then(Value::as_str)
+        .filter(|profile_id| !profile_id.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "AgentSight aggregate manifest '{}' has no profile identity",
+                    path.display()
+                ),
+            )
+        })?;
+    Ok(Some(profile_id.to_string()))
+}
+
 fn import_observed_process_nodes(
     view: &mut MaterializedView,
     llm_rows: &[LlmCallRow],
@@ -114,6 +285,7 @@ fn import_observed_process_nodes(
         let comm = row.comm.clone();
         let command = comm.clone().unwrap_or_else(|| format!("pid {}", pid));
         view.upsert_process_node(&ProcessNodeRow {
+            scope_id: row.scope_id.clone(),
             id: format!("process-{}-observed", pid),
             pid,
             ppid: None,
@@ -149,6 +321,7 @@ fn llm_call_prompt_rows(rows: &[LlmCallRow]) -> Vec<AuditEventRow> {
             == Some(crate::model::AGENT_NATIVE_SOURCE);
         let prompt_source = if is_agent_native { "local" } else { "ssl" };
         prompts.push(AuditEventRow {
+            scope_id: row.scope_id.clone(),
             id: format!("audit-{}-request", row.id),
             timestamp_ms: row.start_timestamp_ms,
             audit_type: "llm".to_string(),
@@ -262,6 +435,7 @@ fn local_prompt_llm_call_row(row: &AuditEventRow) -> Option<LlmCallRow> {
         .and_then(Value::as_str)
         .map(ToString::to_string);
     Some(LlmCallRow {
+        scope_id: row.scope_id.clone(),
         id: format!("llm-{}", row.id),
         session_id,
         conversation_id,
@@ -301,7 +475,7 @@ fn prompt_text_from_details(details: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ViewSink;
+    use crate::model::{NetworkTargetRow, ResourceSampleRow, ViewSink};
     use serde_json::json;
 
     #[test]
@@ -399,6 +573,7 @@ mod tests {
             .unwrap();
         store
             .audit_event(&AuditEventRow {
+                scope_id: None,
                 id: "audit-1".to_string(),
                 timestamp_ms: 1_500,
                 audit_type: "process".to_string(),
@@ -474,8 +649,67 @@ mod tests {
         assert!(view.llm_call_rows(10).is_empty());
     }
 
+    #[test]
+    fn profile_directory_merges_scopes_without_identity_collisions() {
+        let temp = tempfile::tempdir().unwrap();
+        write_profile_source(temp.path(), "host", "profile-1", 1_000);
+        write_profile_source(temp.path(), "task-container", "profile-1", 2_000);
+
+        let view = load_view_with_observed_session_prompts(temp.path()).unwrap();
+        let snapshot = view.export_snapshot(crate::model::SnapshotOptions { audit_limit: 100 });
+
+        assert_eq!(snapshot.source_scopes, ["host", "task-container"]);
+        assert_eq!(snapshot.audit_events.len(), 2);
+        assert_eq!(snapshot.process_nodes.len(), 2);
+        assert_eq!(snapshot.network_targets.len(), 2);
+        assert_eq!(snapshot.resource_samples.len(), 2);
+        assert_eq!(
+            snapshot
+                .audit_events
+                .iter()
+                .filter_map(|row| row.scope_id.as_deref())
+                .collect::<Vec<_>>(),
+            ["host", "task-container"]
+        );
+        assert!(snapshot.audit_events.iter().all(|row| row.id == "same-id"));
+        assert!(snapshot.process_nodes.iter().all(|row| row.pid == 42));
+    }
+
+    #[test]
+    fn profile_directory_rejects_conflicting_profile_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        write_profile_source(temp.path(), "host", "profile-1", 1_000);
+        write_profile_source(temp.path(), "task-container", "profile-2", 2_000);
+
+        let error = load_view_with_observed_session_prompts(temp.path())
+            .err()
+            .unwrap()
+            .to_string();
+
+        assert!(error.contains("conflicting profile IDs"), "{error}");
+    }
+
+    #[test]
+    fn profile_directory_rejects_root_source_identity_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("profile.json"),
+            serde_json::to_vec(&json!({"profileId": "profile-root"})).unwrap(),
+        )
+        .unwrap();
+        write_profile_source(temp.path(), "host", "profile-source", 1_000);
+
+        let error = load_view_with_observed_session_prompts(temp.path())
+            .err()
+            .unwrap()
+            .to_string();
+
+        assert!(error.contains("conflicting profile IDs"), "{error}");
+    }
+
     fn ssl_call_row(model: &str, text: &str) -> LlmCallRow {
         LlmCallRow {
+            scope_id: None,
             id: "ssl-call".to_string(),
             session_id: None,
             conversation_id: None,
@@ -520,6 +754,7 @@ mod tests {
         text: &str,
     ) -> AuditEventRow {
         AuditEventRow {
+            scope_id: None,
             id: id.to_string(),
             timestamp_ms,
             audit_type: "llm".to_string(),
@@ -599,6 +834,79 @@ mod tests {
                     json!({"filepath": path.to_string_lossy()}).to_string(),
                 ],
             )
+            .unwrap();
+    }
+
+    fn write_profile_source(root: &Path, scope_id: &str, profile_id: &str, timestamp_ms: u64) {
+        let directory = root.join("sources").join(scope_id);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("profile.json"),
+            serde_json::to_vec(&json!({
+                "profile_id": profile_id,
+                "scope_id": scope_id,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut store = SqliteStore::open(directory.join("capture.db")).unwrap();
+        store
+            .audit_event(&AuditEventRow {
+                scope_id: None,
+                id: "same-id".to_string(),
+                timestamp_ms,
+                audit_type: "process".to_string(),
+                pid: Some(42),
+                comm: Some("agent".to_string()),
+                subject: None,
+                action: Some("exec".to_string()),
+                target: Some("/bin/agent".to_string()),
+                status: Some("observed".to_string()),
+                summary: None,
+                details: json!({}),
+            })
+            .unwrap();
+        store
+            .process_node(&ProcessNodeRow {
+                scope_id: None,
+                id: "same-process".to_string(),
+                pid: 42,
+                ppid: Some(1),
+                root_pid: Some(42),
+                start_timestamp_ms: Some(timestamp_ms),
+                end_timestamp_ms: None,
+                comm: Some("agent".to_string()),
+                command: Some("/bin/agent".to_string()),
+                argv: vec!["/bin/agent".to_string()],
+                cwd: Some("/work".to_string()),
+                exit_code: None,
+                status: Some("running".to_string()),
+                view_source: "test".to_string(),
+                confidence: Some(1.0),
+            })
+            .unwrap();
+        store
+            .network_target(&NetworkTargetRow {
+                scope_id: None,
+                pid: Some(42),
+                comm: Some("agent".to_string()),
+                host: "api.example.test".to_string(),
+                path: Some("/v1".to_string()),
+                count: 1,
+                error_count: 0,
+                first_timestamp_ms: Some(timestamp_ms),
+                last_timestamp_ms: Some(timestamp_ms),
+            })
+            .unwrap();
+        store
+            .resource_sample(&ResourceSampleRow {
+                scope_id: None,
+                timestamp_ms,
+                pid: Some(42),
+                comm: Some("agent".to_string()),
+                cpu_percent: Some(1.0),
+                rss_mb: Some(10),
+            })
             .unwrap();
     }
 }

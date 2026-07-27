@@ -114,6 +114,8 @@ struct env {
 	bool nss;
 	bool handshake;
 	char *extra_lib;
+	unsigned long long pidns_dev;
+	unsigned long long pidns_ino;
 } env = {
 	.uid = INVALID_UID,
 	.pid = INVALID_PID,
@@ -127,6 +129,7 @@ struct env {
 
 #define EXTRA_LIB_KEY 1003
 #define SESSION_KEY 1004
+#define PIDNS_FILTER_KEY 1005
 
 static const struct argp_option opts[] = {
 	{"pid", 'p', "PID", 0, "Sniff this PID only."},
@@ -139,6 +142,7 @@ static const struct argp_option opts[] = {
 	{"handshake", 'h', NULL, 0, "Show handshake events."},
 	{"verbose", 'v', NULL, 0, "Verbose debug output"},
 	{"binary-path", EXTRA_LIB_KEY, "PATH", 0, "Attach to specific binary (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)."},
+	{"pidns-filter", PIDNS_FILTER_KEY, "PATH", 0, "Sniff only processes in this PID namespace."},
 	{},
 };
 
@@ -359,6 +363,18 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
 	case EXTRA_LIB_KEY:
 		env.extra_lib = strdup(arg);
 		break;
+	case PIDNS_FILTER_KEY: {
+		struct stat namespace;
+
+		if (stat(arg, &namespace) != 0) {
+			fprintf(stderr, "Cannot stat PID namespace %s: %s\n",
+					arg, strerror(errno));
+			argp_usage(state);
+		}
+		env.pidns_dev = namespace.st_dev;
+		env.pidns_ino = namespace.st_ino;
+		break;
+	}
 	default:
 		return ARGP_ERR_UNKNOWN;
 	}
@@ -681,6 +697,8 @@ int main(int argc, char **argv) {
 
 	obj->rodata->targ_uid = env.uid;
 	obj->rodata->targ_pid = env.pid == INVALID_PID ? 0 : env.pid;
+	obj->rodata->targ_pidns_dev = env.pidns_dev;
+	obj->rodata->targ_pidns_ino = env.pidns_ino;
 
 	err = sslsniff_bpf__load(obj);
 	if (err) {

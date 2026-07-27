@@ -845,6 +845,7 @@ mod tests {
     fn live_capture_snapshot_counts_events_by_pid() {
         let snapshot = Snapshot {
             audit_events: vec![crate::model::AuditEventRow {
+                scope_id: None,
                 id: "a".to_string(),
                 timestamp_ms: 1,
                 audit_type: "file".to_string(),
@@ -889,6 +890,7 @@ mod tests {
         let capture = LiveCaptureSnapshot::new(
             Snapshot {
                 audit_events: vec![crate::model::AuditEventRow {
+                    scope_id: None,
                     id: "net-1".to_string(),
                     timestamp_ms: 1,
                     audit_type: "network".to_string(),
@@ -960,6 +962,7 @@ mod tests {
         target: impl AsRef<std::path::Path>,
     ) -> crate::model::AuditEventRow {
         crate::model::AuditEventRow {
+            scope_id: None,
             id: format!("audit-{timestamp_ms}"),
             timestamp_ms,
             audit_type: "file".to_string(),

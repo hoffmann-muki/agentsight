@@ -7,6 +7,7 @@ import { useMemo } from 'react';
 import { useTranslation } from '@/i18n';
 
 interface FilterableEvent {
+  scopeId: string;
   source: string;
   comm: string;
   pid: number;
@@ -14,10 +15,12 @@ interface FilterableEvent {
 
 interface EventFiltersProps {
   events: FilterableEvent[];
+  selectedScope: string;
   selectedSource: string;
   selectedComm: string;
   selectedPid: string;
   searchTerm?: string;
+  onScopeChange: (scope: string) => void;
   onSourceChange: (source: string) => void;
   onCommChange: (comm: string) => void;
   onPidChange: (pid: string) => void;
@@ -27,10 +30,12 @@ interface EventFiltersProps {
 
 export function EventFilters({
   events,
+  selectedScope,
   selectedSource,
   selectedComm,
   selectedPid,
   searchTerm = '',
+  onScopeChange,
   onSourceChange,
   onCommChange,
   onPidChange,
@@ -38,6 +43,10 @@ export function EventFilters({
   showSearch = false
 }: EventFiltersProps) {
   const { t } = useTranslation();
+  const scopes = useMemo(() => {
+    return Array.from(new Set(events.map(event => event.scopeId))).sort();
+  }, [events]);
+
   const sources = useMemo(() => {
     const unique = new Set(events.map(event => event.source));
     return Array.from(unique).sort();
@@ -68,6 +77,23 @@ export function EventFilters({
       )}
       
       <div className="flex flex-col sm:flex-row gap-4">
+        {scopes.length > 1 && (
+          <div className="flex-1">
+            <select
+              value={selectedScope}
+              onChange={(e) => onScopeChange(e.target.value)}
+              aria-label={t('filter.scope')}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="">{t('filter.allScopes')}</option>
+              {scopes.map(scope => (
+                <option key={scope} value={scope}>
+                  {scope} ({events.filter(event => event.scopeId === scope).length})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="flex-1">
           <select
             value={selectedSource}

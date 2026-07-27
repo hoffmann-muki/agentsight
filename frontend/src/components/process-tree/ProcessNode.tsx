@@ -114,6 +114,9 @@ export function ProcessNode({
               <span className="text-sm text-gray-500 font-mono bg-gray-100 px-2 py-1 rounded">
                 PID {process.pid}
               </span>
+              <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+                {process.scopeId}
+              </span>
               <span className="font-semibold text-gray-900 text-lg">
                 [{process.comm}]
               </span>

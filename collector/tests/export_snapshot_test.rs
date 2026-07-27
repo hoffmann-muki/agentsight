@@ -156,3 +156,73 @@ fn top_reads_active_claude_local_session_model_and_tokens() {
     assert!(top.contains("26"), "{top}");
     assert!(top.contains("1 tool"), "{top}");
 }
+
+#[test]
+fn report_exports_one_scope_aware_snapshot_for_multi_scope_profile() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_profile_source(temp.path(), "host", 1_000);
+    write_profile_source(temp.path(), "task-container", 2_000);
+    let output = temp.path().join("snapshot.json");
+
+    agentsight_output(&[
+        "report",
+        "--profile-dir",
+        temp.path().to_str().unwrap(),
+        "export",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    assert_eq!(
+        snapshot["source_scopes"],
+        serde_json::json!(["host", "task-container"])
+    );
+    let rows = snapshot["audit_events"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], "same-id");
+    assert_eq!(rows[1]["id"], "same-id");
+    assert_eq!(rows[0]["scope_id"], "host");
+    assert_eq!(rows[1]["scope_id"], "task-container");
+}
+
+fn write_profile_source(root: &std::path::Path, scope_id: &str, timestamp_ms: u64) {
+    let directory = root.join("sources").join(scope_id);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("profile.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "profile_id": "profile-1",
+            "scope_id": scope_id,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let database = rusqlite::Connection::open(directory.join("capture.db")).unwrap();
+    database
+        .execute_batch(
+            "CREATE TABLE audit_events (
+                id TEXT PRIMARY KEY,
+                timestamp_ms INTEGER NOT NULL,
+                audit_type TEXT NOT NULL,
+                pid INTEGER,
+                comm TEXT,
+                subject TEXT,
+                action TEXT,
+                target TEXT,
+                status TEXT,
+                summary TEXT,
+                details_json TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+    database
+        .execute(
+            "INSERT INTO audit_events (
+                id, timestamp_ms, audit_type, pid, comm, action, target, status, details_json
+             ) VALUES ('same-id', ?1, 'process', 42, 'agent', 'exec', '/bin/agent', 'observed', '{}')",
+            [timestamp_ms as i64],
+        )
+        .unwrap();
+}

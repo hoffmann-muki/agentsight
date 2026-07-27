@@ -18,6 +18,7 @@ export interface SnapshotTokenSummary {
 }
 
 export interface SnapshotNetworkTarget {
+  scope_id?: string | null;
   pid?: number | null;
   comm?: string | null;
   host: string;
@@ -29,6 +30,7 @@ export interface SnapshotNetworkTarget {
 }
 
 export interface SnapshotAuditEvent {
+  scope_id?: string | null;
   id: string;
   timestamp_ms: number;
   audit_type: string;
@@ -43,6 +45,7 @@ export interface SnapshotAuditEvent {
 }
 
 export interface SnapshotProcessNode {
+  scope_id?: string | null;
   id: string;
   pid: number;
   ppid?: number | null;
@@ -58,6 +61,7 @@ export interface SnapshotProcessNode {
 }
 
 export interface SnapshotResourceSample {
+  scope_id?: string | null;
   timestamp_ms: number;
   pid?: number | null;
   comm?: string | null;
@@ -66,6 +70,7 @@ export interface SnapshotResourceSample {
 }
 
 export interface SnapshotSession {
+  scope_id?: string | null;
   id: string;
   agent_type: string;
   start_timestamp_ms: number;
@@ -79,6 +84,7 @@ export interface SnapshotSession {
 }
 
 export interface SnapshotToolCall {
+  scope_id?: string | null;
   id: string;
   session_id?: string | null;
   timestamp_ms: number;
@@ -92,6 +98,7 @@ export interface SnapshotToolCall {
 export interface AgentSightSnapshot {
   schema_version?: number;
   generated_at?: string;
+  source_scopes?: string[];
   summary?: SnapshotSummary;
   token_summary?: SnapshotTokenSummary[];
   network_targets?: SnapshotNetworkTarget[];

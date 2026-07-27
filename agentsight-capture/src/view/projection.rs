@@ -420,6 +420,7 @@ impl MaterializedView {
                     .map(|v| v as u64);
                 let request_id = item.get("request_id").and_then(Value::as_str);
                 self.emit_tool_call(ToolCallRow {
+                    scope_id: None,
                     id: format!("claude-tool-telemetry-{}-{idx}", event.event_id),
                     session_id: None,
                     conversation_id: None,
@@ -509,6 +510,7 @@ impl MaterializedView {
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("openai-tool-{idx}"));
                 self.emit_tool_call(ToolCallRow {
+                    scope_id: None,
                     id: format!("tool-{llm_call_id}-{tool_id}"),
                     session_id: None,
                     conversation_id: Some(format!("conv-{llm_call_id}")),
@@ -546,6 +548,7 @@ impl MaterializedView {
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("tool-{idx}"));
             self.emit_tool_call(ToolCallRow {
+                scope_id: None,
                 id: format!("tool-{llm_call_id}-{tool_id}"),
                 session_id: None,
                 conversation_id: Some(format!("conv-{llm_call_id}")),
@@ -570,6 +573,7 @@ impl MaterializedView {
     fn ingest_process_audit(&mut self, event: &CanonicalEvent, action: &str) -> ViewResult<()> {
         let target = event.attributes.get("filename").and_then(Value::as_str);
         self.emit_audit_event(AuditEventRow {
+            scope_id: None,
             id: format!("audit-{}", event.event_id),
             timestamp_ms: event.timestamp_ms,
             audit_type: "process".to_string(),
@@ -617,6 +621,7 @@ impl MaterializedView {
             .or_else(|| event.attributes.get("filepath"))
             .and_then(Value::as_str);
         self.emit_audit_event(AuditEventRow {
+            scope_id: None,
             id: format!("audit-{}", event.event_id),
             timestamp_ms: event.timestamp_ms,
             audit_type: "file".to_string(),
@@ -639,6 +644,7 @@ impl MaterializedView {
             .and_then(Value::as_str);
         let action = process_network_action(&event.attributes).unwrap_or("network");
         self.emit_audit_event(AuditEventRow {
+            scope_id: None,
             id: format!("audit-{}", event.event_id),
             timestamp_ms: event.timestamp_ms,
             audit_type: "network".to_string(),
@@ -669,6 +675,7 @@ fn emit_llm_audit(
     details: Option<&Value>,
 ) -> ViewResult<()> {
     view.emit_audit_event(AuditEventRow {
+        scope_id: None,
         id: format!("audit-{llm_call_id}-{action}"),
         timestamp_ms,
         audit_type: "llm".to_string(),
@@ -697,6 +704,7 @@ fn token_usage_row(
     confidence: f32,
 ) -> TokenUsageRow {
     TokenUsageRow {
+        scope_id: None,
         id: id.to_string(),
         llm_call_id: llm_call_id.to_string(),
         timestamp_ms,
@@ -750,6 +758,7 @@ fn process_node_from_event(
     let status = process_audit_status(action, &event.attributes).to_string();
     let argv = process_argv(&event.attributes);
     Some(ProcessNodeRow {
+        scope_id: None,
         id,
         pid,
         ppid: event.ppid,
@@ -852,6 +861,7 @@ fn network_target_from_event(event: &CanonicalEvent) -> Option<NetworkTargetRow>
             || event.status_code.map(|code| code >= 400).unwrap_or(false),
     );
     Some(NetworkTargetRow {
+        scope_id: None,
         pid: event.pid,
         comm: event.comm.clone(),
         host: host.to_string(),
@@ -870,6 +880,7 @@ fn resource_sample_from_event(event: &CanonicalEvent) -> Option<ResourceSampleRo
     let cpu = number_or_string(event.attributes.get("cpu").and_then(|v| v.get("percent")));
     let rss_mb = number_or_string(event.attributes.get("memory").and_then(|v| v.get("rss_mb")));
     Some(ResourceSampleRow {
+        scope_id: None,
         timestamp_ms: event.timestamp_ms,
         pid: event.pid,
         comm: event.comm.clone(),
@@ -904,6 +915,7 @@ fn llm_call_row(
         .and_then(conversation_id_from_body)
         .or_else(|| response_body.and_then(conversation_id_from_body));
     LlmCallRow {
+        scope_id: None,
         id: id.to_string(),
         session_id,
         conversation_id,

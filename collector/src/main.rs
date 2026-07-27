@@ -172,7 +172,10 @@ async fn setup_signal_handler(suppress_terminal_output: bool) {
         }
 
         SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-        shutdown_notify().notify_waiters();
+        // `notify_one` retains one permit when the capture loop has not yet
+        // registered its waiter. This matters when a supervised run stops
+        // immediately after publishing its readiness record.
+        shutdown_notify().notify_one();
     });
 }
 
@@ -267,7 +270,7 @@ enum Commands {
         /// Include descendant cgroups
         #[arg(long, requires = "cgroup_filter")]
         cgroup_filter_children: bool,
-        /// PID namespace handle for process and resource capture, e.g. /proc/PID/ns/pid
+        /// PID namespace handle for process, resource, and TLS capture, e.g. /proc/PID/ns/pid
         #[arg(long, conflicts_with_all = ["comm", "pid", "session_id", "cgroup_filter"])]
         pidns_filter: Option<String>,
         /// Binary path or container ref to monitor (e.g., /usr/bin/node, docker://name, k8s://ns/pod/container)
@@ -316,11 +319,11 @@ enum Commands {
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Query and report on recorded sessions: summary, tokens, audit, prompts, export, list.
+    /// Query and report on a database or multi-scope profile: summary, tokens, audit, prompts, export, list.
     /// Defaults to summary when no subcommand is given.
     Report {
-        /// SQLite database path (defaults to latest agentsight-*.db, then local agent sessions)
-        #[arg(long)]
+        /// SQLite database or AgentSight profile directory (defaults to latest agentsight-*.db, then local sessions)
+        #[arg(long, visible_alias = "profile-dir")]
         db: Option<String>,
         /// Read agent-native Claude/Codex/Gemini sessions instead of a saved DB
         #[arg(long)]
@@ -337,8 +340,8 @@ enum Commands {
 enum ReportCommands {
     /// Session summary: what the agent did, tokens, processes, files
     Summary {
-        /// SQLite database path (defaults to latest agentsight-*.db, then local agent sessions)
-        #[arg(long)]
+        /// SQLite database or AgentSight profile directory
+        #[arg(long, visible_alias = "profile-dir")]
         db: Option<String>,
         /// Read agent-native Claude/Codex/Gemini sessions
         #[arg(long)]
@@ -346,10 +349,10 @@ enum ReportCommands {
     },
     /// Query token usage from a saved DB or local agent sessions
     Token {
-        /// SQLite database path (defaults to latest agentsight-*.db, then local agent sessions)
-        #[arg(long)]
+        /// SQLite database or AgentSight profile directory
+        #[arg(long, visible_alias = "profile-dir")]
         db: Option<String>,
-        /// Grouping key: model, provider, comm, pid, dir (aliases: cwd, directory)
+        /// Grouping key: model, scope, provider, comm, pid, dir (aliases: cwd, directory)
         #[arg(long, default_value = "model")]
         group_by: String,
         /// Emit JSON output
@@ -358,8 +361,8 @@ enum ReportCommands {
     },
     /// Query audit events from a saved DB or local agent sessions
     Audit {
-        /// SQLite database path (defaults to latest agentsight-*.db, then local agent sessions)
-        #[arg(long)]
+        /// SQLite database or AgentSight profile directory
+        #[arg(long, visible_alias = "profile-dir")]
         db: Option<String>,
         /// Audit type: llm, process, file
         #[arg(long)]
@@ -373,8 +376,8 @@ enum ReportCommands {
     },
     /// Show captured LLM prompts and responses when observable
     Prompts {
-        /// SQLite database path (defaults to latest agentsight-*.db, then local agent sessions)
-        #[arg(long)]
+        /// SQLite database or AgentSight profile directory
+        #[arg(long, visible_alias = "profile-dir")]
         db: Option<String>,
         /// Maximum rows
         #[arg(long, default_value = "20")]
@@ -385,8 +388,8 @@ enum ReportCommands {
     },
     /// Export a web/demo snapshot from a saved DB or local agent sessions
     Export {
-        /// SQLite database path (defaults to latest agentsight-*.db, then local agent sessions)
-        #[arg(long)]
+        /// SQLite database or AgentSight profile directory
+        #[arg(long, visible_alias = "profile-dir")]
         db: Option<String>,
         /// Output snapshot path, or '-' for stdout
         #[arg(short, long)]
@@ -395,10 +398,10 @@ enum ReportCommands {
         #[arg(long, default_value = "10000")]
         audit_limit: usize,
     },
-    /// Serve the web UI for a saved SQLite session or local agent sessions
+    /// Serve the web UI for a saved database, multi-scope profile, or local sessions
     Serve {
-        /// SQLite database path (defaults to latest agentsight-*.db, then local agent sessions)
-        #[arg(long)]
+        /// SQLite database or AgentSight profile directory
+        #[arg(long, visible_alias = "profile-dir")]
         db: Option<String>,
         /// Server port for the web UI
         #[arg(long, default_value = "7395")]
@@ -809,6 +812,7 @@ async fn run_with_extractor(
                 system_interval: 2,
                 ssl_http: true,
                 binary_path: binary_path.clone(),
+                tls_pid_namespace_filter: pidns_filter.clone(),
                 tls_binary_only: *tls_binary_only,
                 db_path: configured_db_path(db),
                 profile: profile_dir.clone().map(|directory| {
@@ -1075,6 +1079,32 @@ mod tests {
                 "outside.db",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn report_accepts_profile_directory_alias() {
+        assert!(
+            <Cli as clap::Parser>::try_parse_from([
+                "agentsight",
+                "report",
+                "--profile-dir",
+                "profile",
+                "serve",
+            ])
+            .is_ok()
+        );
+        assert!(
+            <Cli as clap::Parser>::try_parse_from([
+                "agentsight",
+                "report",
+                "export",
+                "--profile-dir",
+                "profile",
+                "--output",
+                "snapshot.json",
+            ])
+            .is_ok()
         );
     }
 }

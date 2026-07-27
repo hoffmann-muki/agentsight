@@ -30,6 +30,7 @@ const MAX_RESOURCE_SAMPLES_IN_MEMORY: usize = 10_000;
 #[derive(Default)]
 pub struct MaterializedView {
     source: String,
+    source_scopes: BTreeSet<String>,
     llm_calls: BTreeMap<String, LlmCallRow>,
     token_usage: BTreeMap<String, TokenUsageRow>,
     audit_events: BTreeMap<String, AuditEventRow>,
@@ -155,31 +156,37 @@ impl MaterializedView {
 
 impl MaterializedView {
     pub fn apply_llm_call(&mut self, row: &LlmCallRow) {
-        if !self.llm_calls.contains_key(&row.id) {
+        self.observe_scope(row.scope_id.as_deref());
+        let key = scoped_key(row.scope_id.as_deref(), &row.id);
+        if !self.llm_calls.contains_key(&key) {
             self.counts.llm_calls += 1;
         }
         self.observe(Some(row.start_timestamp_ms));
         self.observe(row.end_timestamp_ms);
-        self.llm_calls.insert(row.id.clone(), row.clone());
+        self.llm_calls.insert(key, row.clone());
     }
 
     pub fn apply_token_usage(&mut self, row: &TokenUsageRow) {
-        if !self.token_usage.contains_key(&row.id) {
+        self.observe_scope(row.scope_id.as_deref());
+        let key = scoped_key(row.scope_id.as_deref(), &row.id);
+        if !self.token_usage.contains_key(&key) {
             self.counts.token_usage += 1;
         }
         self.observe(Some(row.timestamp_ms));
-        self.token_usage.insert(row.id.clone(), row.clone());
+        self.token_usage.insert(key, row.clone());
     }
 
     pub fn apply_audit_event(&mut self, row: &AuditEventRow) {
-        if !self.audit_events.contains_key(&row.id) {
+        self.observe_scope(row.scope_id.as_deref());
+        let key = scoped_key(row.scope_id.as_deref(), &row.id);
+        if !self.audit_events.contains_key(&key) {
             self.counts.audit_events += 1;
             if self.max_audit_events.is_some() {
-                self.audit_order.push_back(row.id.clone());
+                self.audit_order.push_back(key.clone());
             }
         }
         self.observe(Some(row.timestamp_ms));
-        self.audit_events.insert(row.id.clone(), row.clone());
+        self.audit_events.insert(key, row.clone());
         if let Some(max) = self.max_audit_events {
             while self.audit_events.len() > max {
                 let Some(id) = self.audit_order.pop_front() else {
@@ -191,14 +198,17 @@ impl MaterializedView {
     }
 
     pub fn apply_tool_call(&mut self, row: &ToolCallRow) {
-        if !self.tool_calls.contains_key(&row.id) {
+        self.observe_scope(row.scope_id.as_deref());
+        let key = scoped_key(row.scope_id.as_deref(), &row.id);
+        if !self.tool_calls.contains_key(&key) {
             self.counts.tool_calls += 1;
         }
         self.observe(Some(row.timestamp_ms));
-        self.tool_calls.insert(row.id.clone(), row.clone());
+        self.tool_calls.insert(key, row.clone());
     }
 
     pub fn apply_resource_sample(&mut self, row: &ResourceSampleRow) {
+        self.observe_scope(row.scope_id.as_deref());
         self.counts.resource_samples += 1;
         self.observe(Some(row.timestamp_ms));
         self.resource_samples.push(row.clone());
@@ -211,11 +221,13 @@ impl MaterializedView {
     }
 
     pub fn upsert_session(&mut self, row: &SessionRow) {
+        self.observe_scope(row.scope_id.as_deref());
         self.observe(Some(row.start_timestamp_ms));
         self.observe(row.end_timestamp_ms);
-        let Some(existing) = self.sessions.get_mut(&row.id) else {
+        let key = scoped_key(row.scope_id.as_deref(), &row.id);
+        let Some(existing) = self.sessions.get_mut(&key) else {
             self.counts.sessions += 1;
-            self.sessions.insert(row.id.clone(), row.clone());
+            self.sessions.insert(key, row.clone());
             return;
         };
 
@@ -232,6 +244,7 @@ impl MaterializedView {
     }
 
     pub fn upsert_network_target(&mut self, row: &NetworkTargetRow) {
+        self.observe_scope(row.scope_id.as_deref());
         self.observe(row.first_timestamp_ms);
         self.observe(row.last_timestamp_ms);
         let key = network_target_key(row);
@@ -250,11 +263,13 @@ impl MaterializedView {
     }
 
     pub fn upsert_process_node(&mut self, row: &ProcessNodeRow) {
+        self.observe_scope(row.scope_id.as_deref());
         self.observe(row.start_timestamp_ms);
         self.observe(row.end_timestamp_ms);
-        let Some(existing) = self.process_nodes.get_mut(&row.id) else {
+        let key = scoped_key(row.scope_id.as_deref(), &row.id);
+        let Some(existing) = self.process_nodes.get_mut(&key) else {
             self.counts.process_nodes += 1;
-            self.process_nodes.insert(row.id.clone(), row.clone());
+            self.process_nodes.insert(key, row.clone());
             return;
         };
 
@@ -292,6 +307,7 @@ impl MaterializedView {
         Snapshot {
             schema_version: 1,
             generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+            source_scopes: self.source_scopes.iter().cloned().collect(),
             summary: self.snapshot_summary(options),
             token_summary: self.token_summary("model"),
             network_targets: self.network_targets(),
@@ -382,7 +398,9 @@ impl MaterializedView {
             .values()
             .cloned()
             .map(|mut row| {
-                if let Some((input, output, total)) = token_totals.get(&row.id) {
+                if let Some((input, output, total)) =
+                    token_totals.get(&scoped_key(row.scope_id.as_deref(), &row.id))
+                {
                     row.input_tokens = *input;
                     row.output_tokens = *output;
                     row.total_tokens = *total;
@@ -400,6 +418,7 @@ impl MaterializedView {
         rows.sort_by(|a, b| {
             a.timestamp_ms
                 .cmp(&b.timestamp_ms)
+                .then_with(|| a.scope_id.cmp(&b.scope_id))
                 .then_with(|| a.pid.cmp(&b.pid))
                 .then_with(|| a.comm.cmp(&b.comm))
         });
@@ -411,6 +430,7 @@ impl MaterializedView {
         rows.sort_by(|a, b| {
             b.count
                 .cmp(&a.count)
+                .then_with(|| a.scope_id.cmp(&b.scope_id))
                 .then_with(|| a.host.cmp(&b.host))
                 .then_with(|| a.path.cmp(&b.path))
         });
@@ -422,6 +442,7 @@ impl MaterializedView {
         rows.sort_by(|a, b| {
             a.timestamp_ms
                 .cmp(&b.timestamp_ms)
+                .then_with(|| a.scope_id.cmp(&b.scope_id))
                 .then_with(|| a.id.cmp(&b.id))
         });
         let limit = limit.min(100_000);
@@ -436,6 +457,7 @@ impl MaterializedView {
         rows.sort_by(|a, b| {
             a.start_timestamp_ms
                 .cmp(&b.start_timestamp_ms)
+                .then_with(|| a.scope_id.cmp(&b.scope_id))
                 .then_with(|| a.pid.cmp(&b.pid))
                 .then_with(|| a.id.cmp(&b.id))
         });
@@ -447,6 +469,7 @@ impl MaterializedView {
         rows.sort_by(|a, b| {
             a.start_timestamp_ms
                 .cmp(&b.start_timestamp_ms)
+                .then_with(|| a.scope_id.cmp(&b.scope_id))
                 .then_with(|| a.id.cmp(&b.id))
         });
         rows
@@ -467,9 +490,10 @@ impl MaterializedView {
         let mut selected: BTreeMap<String, &TokenUsageRow> = BTreeMap::new();
         let mut gemini_totals = BTreeMap::new();
         for token in self.token_usage.values() {
-            let Some(key) = token.pid.zip(token.model.as_deref()) else {
+            let Some((pid, model)) = token.pid.zip(token.model.as_deref()) else {
                 continue;
             };
+            let key = (token.scope_id.as_deref().unwrap_or_default(), pid, model);
             let totals = gemini_totals.entry(key).or_insert((0, 0));
             match token.source.as_str() {
                 "response_usage" | "orphan_response_usage" => totals.0 += token.total_tokens,
@@ -478,10 +502,17 @@ impl MaterializedView {
             }
         }
         for token in self.token_usage.values() {
-            if let Some((network, stdout)) = token
-                .pid
-                .zip(token.model.as_deref())
-                .and_then(|key| gemini_totals.get(&key))
+            if let Some((network, stdout)) =
+                token
+                    .pid
+                    .zip(token.model.as_deref())
+                    .and_then(|(pid, model)| {
+                        gemini_totals.get(&(
+                            token.scope_id.as_deref().unwrap_or_default(),
+                            pid,
+                            model,
+                        ))
+                    })
             {
                 let network_source = matches!(
                     token.source.as_str(),
@@ -498,12 +529,17 @@ impl MaterializedView {
                 token
                     .pid
                     .zip(token.model.as_deref())
-                    .map(|(pid, model)| format!("gemini-stdout\0{pid}\0{model}"))
-                    .unwrap_or_else(|| token.id.clone())
+                    .map(|(pid, model)| {
+                        scoped_key(
+                            token.scope_id.as_deref(),
+                            &format!("gemini-stdout\0{pid}\0{model}"),
+                        )
+                    })
+                    .unwrap_or_else(|| scoped_key(token.scope_id.as_deref(), &token.id))
             } else if token.llm_call_id.is_empty() {
-                token.id.clone()
+                scoped_key(token.scope_id.as_deref(), &token.id)
             } else {
-                token.llm_call_id.clone()
+                scoped_key(token.scope_id.as_deref(), &token.llm_call_id)
             };
             match selected.get(&key) {
                 Some(current) if !token_has_higher_priority(token, current) => {}
@@ -519,7 +555,7 @@ impl MaterializedView {
         let mut totals = BTreeMap::new();
         for token in self.effective_tokens() {
             totals.insert(
-                token.llm_call_id.clone(),
+                scoped_key(token.scope_id.as_deref(), &token.llm_call_id),
                 (token.input_tokens, token.output_tokens, token.total_tokens),
             );
         }
@@ -536,6 +572,7 @@ impl MaterializedView {
 
     fn token_group(&self, token: &TokenUsageRow, group_by: &str) -> String {
         match group_by {
+            "scope" => token.scope_id.clone(),
             "provider" => token.provider.clone(),
             "comm" => token.comm.clone(),
             "pid" => token.pid.map(|pid| pid.to_string()),
@@ -555,36 +592,118 @@ impl MaterializedView {
     fn token_session_key(&self, token: &TokenUsageRow) -> Option<String> {
         if let Some(session_id) = self
             .llm_calls
-            .get(&token.llm_call_id)
+            .get(&scoped_key(token.scope_id.as_deref(), &token.llm_call_id))
             .and_then(|row| row.session_id.as_ref())
             .filter(|session_id| !session_id.is_empty())
         {
-            return Some(session_id.clone());
+            return Some(scoped_key(token.scope_id.as_deref(), session_id));
         }
 
         self.sessions
-            .keys()
-            .find(|session_id| {
-                let session_id = session_id.as_str();
+            .iter()
+            .find(|(_, session)| {
+                if session.scope_id != token.scope_id {
+                    return false;
+                }
+                let session_id = session.id.as_str();
                 token.llm_call_id == session_id
                     || token
                         .llm_call_id
                         .strip_prefix(session_id)
                         .is_some_and(|suffix| suffix.starts_with('-'))
             })
-            .cloned()
+            .map(|(key, _)| key.clone())
     }
 
     fn token_process_cwd(&self, token: &TokenUsageRow) -> Option<String> {
         let pid = token.pid.or_else(|| {
             self.llm_calls
-                .get(&token.llm_call_id)
+                .get(&scoped_key(token.scope_id.as_deref(), &token.llm_call_id))
                 .and_then(|row| row.pid)
         })?;
         self.process_nodes
             .values()
-            .find(|row| row.pid == pid && row.cwd.as_deref().is_some_and(|cwd| !cwd.is_empty()))
+            .find(|row| {
+                row.scope_id == token.scope_id
+                    && row.pid == pid
+                    && row.cwd.as_deref().is_some_and(|cwd| !cwd.is_empty())
+            })
             .and_then(|row| row.cwd.clone())
+    }
+
+    fn assign_scope(&mut self, scope_id: &str) {
+        let scope_id = Some(scope_id.to_string());
+        self.llm_calls
+            .values_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+        self.token_usage
+            .values_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+        self.audit_events
+            .values_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+        self.process_nodes
+            .values_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+        self.tool_calls
+            .values_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+        self.sessions
+            .values_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+        self.network_targets
+            .values_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+        self.resource_samples
+            .iter_mut()
+            .for_each(|row| row.scope_id = scope_id.clone());
+    }
+
+    pub(crate) fn merge_scoped_from(&mut self, mut other: Self, scope_id: &str) {
+        self.source_scopes.insert(scope_id.to_string());
+        other.assign_scope(scope_id);
+        self.merge_from(other);
+    }
+
+    fn merge_from(&mut self, other: Self) {
+        other
+            .llm_calls
+            .into_values()
+            .for_each(|row| self.apply_llm_call(&row));
+        other
+            .token_usage
+            .into_values()
+            .for_each(|row| self.apply_token_usage(&row));
+        other
+            .audit_events
+            .into_values()
+            .for_each(|row| self.apply_audit_event(&row));
+        other
+            .process_nodes
+            .into_values()
+            .for_each(|row| self.upsert_process_node(&row));
+        other
+            .tool_calls
+            .into_values()
+            .for_each(|row| self.apply_tool_call(&row));
+        other
+            .sessions
+            .into_values()
+            .for_each(|row| self.upsert_session(&row));
+        other
+            .network_targets
+            .into_values()
+            .for_each(|row| self.upsert_network_target(&row));
+        other
+            .resource_samples
+            .into_iter()
+            .for_each(|row| self.apply_resource_sample(&row));
+    }
+
+    fn observe_scope(&mut self, scope_id: Option<&str>) {
+        if let Some(scope_id) = scope_id {
+            self.source_scopes.insert(scope_id.to_string());
+        }
     }
 }
 
@@ -651,11 +770,16 @@ fn token_source_priority(source: &str) -> u8 {
 
 fn network_target_key(row: &NetworkTargetRow) -> String {
     format!(
-        "{}\0{}\0{}",
+        "{}\0{}\0{}\0{}",
+        row.scope_id.as_deref().unwrap_or_default(),
         row.pid.unwrap_or_default(),
         row.host,
         row.path.as_deref().unwrap_or_default()
     )
+}
+
+fn scoped_key(scope_id: Option<&str>, id: &str) -> String {
+    format!("{}\0{id}", scope_id.unwrap_or_default())
 }
 
 fn observe_timestamp(start: &mut Option<u64>, end: &mut Option<u64>, timestamp: Option<u64>) {
@@ -697,6 +821,7 @@ mod tests {
 
     fn audit_row(timestamp_ms: u64) -> AuditEventRow {
         AuditEventRow {
+            scope_id: None,
             id: format!("audit-{timestamp_ms}"),
             timestamp_ms,
             audit_type: "file".to_string(),
@@ -713,6 +838,7 @@ mod tests {
 
     fn session_row(id: &str, cwd: &str) -> SessionRow {
         SessionRow {
+            scope_id: None,
             id: id.to_string(),
             agent_type: "codex".to_string(),
             start_timestamp_ms: 1_000,
@@ -739,6 +865,7 @@ mod tests {
         total_tokens: i64,
     ) -> TokenUsageRow {
         TokenUsageRow {
+            scope_id: None,
             id: id.to_string(),
             llm_call_id: llm_call_id.to_string(),
             timestamp_ms: 1_500,
@@ -759,6 +886,7 @@ mod tests {
 
     fn process_node(pid: u32, cwd: &str) -> ProcessNodeRow {
         ProcessNodeRow {
+            scope_id: None,
             id: format!("process-{pid}"),
             pid,
             ppid: None,
@@ -778,6 +906,7 @@ mod tests {
 
     fn llm_call_row(id: &str, pid: u32, session_id: Option<&str>) -> LlmCallRow {
         LlmCallRow {
+            scope_id: None,
             id: id.to_string(),
             session_id: session_id.map(str::to_string),
             conversation_id: None,
@@ -830,6 +959,7 @@ mod tests {
         let mut view = MaterializedView::bounded();
         for timestamp_ms in 0..(MAX_RESOURCE_SAMPLES_IN_MEMORY as u64 + 5) {
             view.apply_resource_sample(&ResourceSampleRow {
+                scope_id: None,
                 timestamp_ms,
                 pid: Some(1),
                 comm: Some("test".to_string()),
@@ -969,6 +1099,7 @@ mod tests {
     fn process_node_preserves_first_non_empty_argv() {
         let mut view = MaterializedView::new();
         let first = ProcessNodeRow {
+            scope_id: None,
             id: "pid:42:start:100".to_string(),
             pid: 42,
             ppid: Some(1),

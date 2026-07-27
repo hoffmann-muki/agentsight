@@ -112,6 +112,15 @@ export default function Home() {
                 <div className="text-sm text-gray-600">
                   <span className="font-medium">{t('app.eventsLoaded', { count: eventCount })}</span>
                 </div>
+                {(snapshot?.source_scopes?.length ?? 0) > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {snapshot?.source_scopes?.map(scope => (
+                      <span key={scope} className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+                        {scope}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {syncing && (
                   <div className="flex items-center text-sm text-blue-600">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></div>

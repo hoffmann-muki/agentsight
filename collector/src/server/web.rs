@@ -270,6 +270,7 @@ mod tests {
 
     fn llm_call(id: &str, pid: u32, comm: &str, timestamp_ms: u64, text: &str) -> LlmCallRow {
         LlmCallRow {
+            scope_id: None,
             id: id.to_string(),
             session_id: None,
             conversation_id: None,
@@ -306,6 +307,7 @@ mod tests {
         let mut store = SqliteStore::open(&db).unwrap();
         store
             .process_node(&ProcessNodeRow {
+                scope_id: None,
                 id: "db-process".to_string(),
                 pid: 42,
                 ppid: None,
@@ -339,6 +341,7 @@ mod tests {
         {
             let mut view = live_view.lock().unwrap();
             view.upsert_process_node(&ProcessNodeRow {
+                scope_id: None,
                 id: "live-process".to_string(),
                 pid: 7,
                 ppid: None,

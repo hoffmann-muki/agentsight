@@ -22,6 +22,7 @@ export type TreeAuditEvent = SnapshotAuditEvent & { promptDiff?: PromptDiff };
 
 export interface ProcessNode {
   id: string;
+  scopeId: string;
   pid: number;
   comm: string;
   ppid?: number;
@@ -41,13 +42,14 @@ export interface TimelineItem {
 
 export function buildProcessTree(snapshot: AgentSightSnapshot | null): ProcessNode[] {
   const processMap = new Map<string, ProcessNode>();
-  const nodesByPid = new Map<number, ProcessNode[]>();
+  const nodesByPid = new Map<string, ProcessNode[]>();
   const promptHistoryByProcess = new Map<string, TreeAuditEvent[]>();
 
   for (const row of snapshot?.process_nodes ?? []) {
     const process = processFromRow(row);
     processMap.set(process.id, process);
-    nodesByPid.set(process.pid, [...(nodesByPid.get(process.pid) ?? []), process]);
+    const key = scopedPid(process.scopeId, process.pid);
+    nodesByPid.set(key, [...(nodesByPid.get(key) ?? []), process]);
   }
   nodesByPid.forEach(nodes => nodes.sort((a, b) => firstTimestamp(a) - firstTimestamp(b)));
 
@@ -55,7 +57,10 @@ export function buildProcessTree(snapshot: AgentSightSnapshot | null): ProcessNo
     const process = processForAudit(row, nodesByPid);
     if (!process) continue;
 
-    const event: TreeAuditEvent = { ...row };
+    const event: TreeAuditEvent = {
+      ...row,
+      id: scopedId(row.scope_id, row.id),
+    };
     if (treeEventType(event) === 'prompt') {
       const history = promptHistoryByProcess.get(process.id) ?? [];
       const previousPrompt = history[history.length - 1];
@@ -126,6 +131,7 @@ export function eventSearchText(row: SnapshotAuditEvent): string {
     row.status,
     row.summary,
     row.comm,
+    row.scope_id,
     eventModel(row),
     eventTarget(row),
     JSON.stringify(row.details ?? row),
@@ -142,7 +148,8 @@ export function eventRaw(row: SnapshotAuditEvent): unknown {
 
 function processFromRow(row: SnapshotProcessNode): ProcessNode {
   return {
-    id: row.id,
+    id: scopedId(row.scope_id, row.id),
+    scopeId: row.scope_id ?? 'default',
     pid: row.pid,
     comm: row.comm ?? row.command ?? 'unknown',
     ppid: row.ppid ?? undefined,
@@ -156,23 +163,23 @@ function processFromRow(row: SnapshotProcessNode): ProcessNode {
 
 function processForAudit(
   row: SnapshotAuditEvent,
-  nodesByPid: Map<number, ProcessNode[]>,
+  nodesByPid: Map<string, ProcessNode[]>,
 ): ProcessNode | undefined {
   if (typeof row.pid !== 'number') return undefined;
   return lastMatching(
-    nodesByPid.get(row.pid),
+    nodesByPid.get(scopedPid(row.scope_id ?? 'default', row.pid)),
     process => containsTimestamp(process, row.timestamp_ms),
   );
 }
 
 function parentProcess(
   process: ProcessNode,
-  nodesByPid: Map<number, ProcessNode[]>,
+  nodesByPid: Map<string, ProcessNode[]>,
 ): ProcessNode | undefined {
   if (!process.ppid) return undefined;
   const start = firstTimestamp(process);
   return lastMatching(
-    nodesByPid.get(process.ppid),
+    nodesByPid.get(scopedPid(process.scopeId, process.ppid)),
     parent => parent.id !== process.id && containsTimestamp(parent, start),
   );
 }
@@ -199,6 +206,14 @@ function firstTimestamp(process: ProcessNode): number {
   const ownStart = process.startTimestamp ?? Infinity;
   const earliest = Math.min(ownStart, eventStart, childStart);
   return earliest === Infinity ? 0 : earliest;
+}
+
+function scopedId(scopeId: string | null | undefined, id: string): string {
+  return `${scopeId ?? 'default'}:${id}`;
+}
+
+function scopedPid(scopeId: string, pid: number): string {
+  return `${scopeId}:${pid}`;
 }
 
 function stringValue(value: unknown): string | undefined {

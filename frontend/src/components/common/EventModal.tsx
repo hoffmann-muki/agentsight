@@ -51,6 +51,10 @@ export function EventModal({ event, onClose, title }: EventModalProps) {
                 </span>
               </div>
               <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{t('modal.scope')}</label>
+                <div className="text-sm text-gray-900">{event.scopeId}</div>
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">{t('modal.process')}</label>
                 <div className="text-sm text-gray-900">{event.comm}</div>
               </div>

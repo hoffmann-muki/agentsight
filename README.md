@@ -136,6 +136,7 @@ use `agentsight report` for structured queries:
 agentsight top                               # live ranked view; uses eBPF when sudo is already available
 agentsight monitor install-service           # install/start the background monitor service
 agentsight report --db run.db                 # summary of a specific saved run
+agentsight report --profile-dir profile serve # unified host/container profile UI
 sudo agentsight record -- claude             # record a command
 agentsight report                            # high-level latest-run summary (default)
 agentsight report list                       # recorded sessions in this directory

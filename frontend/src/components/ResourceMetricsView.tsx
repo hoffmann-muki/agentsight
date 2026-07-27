@@ -8,6 +8,7 @@ import { SnapshotResourceSample } from '@/types/event';
 import { useTranslation } from '@/i18n';
 
 interface ResourceMetrics {
+  scopeId: string;
   timestamp: number;
   datetime: Date;
   formattedTime: string;
@@ -30,6 +31,7 @@ export function ResourceMetricsView({ samples }: ResourceMetricsViewProps) {
     return samples.map(row => {
       const datetime = new Date(row.timestamp_ms);
       return {
+        scopeId: row.scope_id ?? 'default',
         timestamp: row.timestamp_ms,
         datetime,
         formattedTime: datetime.toLocaleTimeString(),
@@ -43,15 +45,15 @@ export function ResourceMetricsView({ samples }: ResourceMetricsViewProps) {
 
   // Get unique processes
   const processes = useMemo(() => {
-    const processMap = new Map<string, { pid: number; comm: string; count: number }>();
+    const processMap = new Map<string, { scopeId: string; pid: number; comm: string; count: number }>();
 
     metrics.forEach(m => {
-      const key = `${m.pid}-${m.comm}`;
+      const key = JSON.stringify([m.scopeId, m.pid, m.comm]);
       const existing = processMap.get(key);
       if (existing) {
         existing.count++;
       } else {
-        processMap.set(key, { pid: m.pid, comm: m.comm, count: 1 });
+        processMap.set(key, { scopeId: m.scopeId, pid: m.pid, comm: m.comm, count: 1 });
       }
     });
 
@@ -65,8 +67,8 @@ export function ResourceMetricsView({ samples }: ResourceMetricsViewProps) {
   const filteredMetrics = useMemo(() => {
     if (selectedProcess === 'all') return metrics;
 
-    const [pid, comm] = selectedProcess.split('-');
-    return metrics.filter(m => m.pid === parseInt(pid) && m.comm === comm);
+    const [scopeId, pid, comm] = JSON.parse(selectedProcess) as [string, number, string];
+    return metrics.filter(m => m.scopeId === scopeId && m.pid === pid && m.comm === comm);
   }, [metrics, selectedProcess]);
 
   // Calculate statistics
@@ -151,7 +153,7 @@ export function ResourceMetricsView({ samples }: ResourceMetricsViewProps) {
               <option value="all">{t('metrics.allProcesses', { count: metrics.length })}</option>
               {processes.map(p => (
                 <option key={p.key} value={p.key}>
-                  {t('metrics.processOption', { comm: p.comm, pid: p.pid, count: p.count })}
+                  {p.scopeId} · {t('metrics.processOption', { comm: p.comm, pid: p.pid, count: p.count })}
                 </option>
               ))}
             </select>

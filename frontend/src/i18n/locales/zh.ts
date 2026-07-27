@@ -25,6 +25,7 @@ export const zh: Record<TranslationKey, string> = {
   'modal.eventDetails': '事件详情',
   'modal.id': 'ID',
   'modal.source': '来源',
+  'modal.scope': '采集范围',
   'modal.process': '进程',
   'modal.pid': 'PID',
   'modal.time': '时间',
@@ -41,6 +42,8 @@ export const zh: Record<TranslationKey, string> = {
 
   // Filters
   'filter.searchEvents': '搜索事件...',
+  'filter.allScopes': '全部采集范围',
+  'filter.scope': '采集范围',
   'filter.allSources': '全部来源',
   'filter.allProcesses': '全部进程',
   'filter.allPids': '全部 PID',

@@ -27,6 +27,7 @@ interface TimelineGroupData {
 export function Timeline({ events }: TimelineProps) {
   const [selectedEvent, setSelectedEvent] = useState<DisplayEvent | null>(null);
   const [timeRange, setTimeRange] = useState<{ start: number; end: number } | null>(null);
+  const [selectedScope, setSelectedScope] = useState<string>('');
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [selectedComm, setSelectedComm] = useState<string>('');
   const [selectedPid, setSelectedPid] = useState<string>('');
@@ -37,20 +38,23 @@ export function Timeline({ events }: TimelineProps) {
   // Filter events based on selected filters
   const filteredEvents = useMemo(() => {
     return filterDisplayEvents(events, {
+      scope: selectedScope,
       source: selectedSource,
       comm: selectedComm,
       pid: selectedPid
     });
-  }, [events, selectedSource, selectedComm, selectedPid]);
+  }, [events, selectedScope, selectedSource, selectedComm, selectedPid]);
 
   // Group filtered events by source
   const timelineGroups: TimelineGroupData[] = useMemo(() => {
     const grouped: { [source: string]: DisplayEvent[] } = {};
+    const multipleScopes = new Set(events.map(event => event.scopeId)).size > 1;
     filteredEvents.forEach(event => {
-      if (!grouped[event.source]) {
-        grouped[event.source] = [];
+      const group = multipleScopes ? `${event.scopeId} / ${event.source}` : event.source;
+      if (!grouped[group]) {
+        grouped[group] = [];
       }
-      grouped[event.source].push(event);
+      grouped[group].push(event);
     });
 
     return Object.entries(grouped).map(([source, events]) => ({
@@ -58,7 +62,7 @@ export function Timeline({ events }: TimelineProps) {
       events: events.sort((a, b) => a.timestamp - b.timestamp),
       color: events[0]?.sourceColor || '#6B7280'
     }));
-  }, [filteredEvents]);
+  }, [events, filteredEvents]);
 
   // Calculate time range
   const fullTimeRange = useMemo(() => {
@@ -235,9 +239,11 @@ export function Timeline({ events }: TimelineProps) {
         {/* Filters */}
           <EventFilters
           events={events}
+          selectedScope={selectedScope}
           selectedSource={selectedSource}
           selectedComm={selectedComm}
           selectedPid={selectedPid}
+          onScopeChange={setSelectedScope}
           onSourceChange={setSelectedSource}
           onCommChange={setSelectedComm}
           onPidChange={setSelectedPid}

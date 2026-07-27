@@ -23,6 +23,8 @@ pub struct TokenSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub id: String,
     pub llm_call_id: String,
     pub timestamp_ms: u64,
@@ -42,6 +44,8 @@ pub struct TokenUsageRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmCallRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub id: String,
     pub session_id: Option<String>,
     pub conversation_id: Option<String>,
@@ -74,6 +78,8 @@ pub struct SnapshotOptions {
 pub struct Snapshot {
     pub schema_version: u16,
     pub generated_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_scopes: Vec<String>,
     pub summary: SnapshotSummary,
     pub token_summary: Vec<TokenSummary>,
     pub network_targets: Vec<NetworkTargetRow>,
@@ -89,6 +95,7 @@ impl Snapshot {
         Self {
             schema_version: 1,
             generated_at: String::new(),
+            source_scopes: Vec::new(),
             summary: SnapshotSummary::empty(source),
             token_summary: Vec::new(),
             network_targets: Vec::new(),
@@ -145,6 +152,8 @@ impl SnapshotSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkTargetRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub pid: Option<u32>,
     pub comm: Option<String>,
     pub host: String,
@@ -157,6 +166,8 @@ pub struct NetworkTargetRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceSampleRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub timestamp_ms: u64,
     pub pid: Option<u32>,
     pub comm: Option<String>,
@@ -166,6 +177,8 @@ pub struct ResourceSampleRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEventRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub id: String,
     pub timestamp_ms: u64,
     pub audit_type: String,
@@ -226,6 +239,8 @@ impl AuditCounters {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessNodeRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub id: String,
     pub pid: u32,
     pub ppid: Option<u32>,
@@ -244,6 +259,8 @@ pub struct ProcessNodeRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub id: String,
     pub session_id: Option<String>,
     pub conversation_id: Option<String>,
@@ -264,6 +281,8 @@ pub struct ToolCallRow {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
     pub id: String,
     pub agent_type: String,
     pub start_timestamp_ms: u64,

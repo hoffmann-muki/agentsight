@@ -38,6 +38,9 @@ export function LogList({ events, onEventClick }: LogListProps) {
                 <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${event.sourceColorClass}`}>
                   {event.source}
                 </span>
+                <span className="inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+                  {event.scopeId}
+                </span>
               </div>
               <div className="text-sm text-gray-900 mb-1">
                 {formatDisplayEventSummary(event)}

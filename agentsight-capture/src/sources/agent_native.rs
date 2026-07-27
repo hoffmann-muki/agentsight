@@ -337,6 +337,7 @@ fn llm_row_for_session(
     request: Value,
 ) -> LlmCallRow {
     LlmCallRow {
+        scope_id: None,
         id: id.to_string(),
         session_id: Some(session_id.to_string()),
         conversation_id: session.conversation_id.clone(),
@@ -380,6 +381,7 @@ pub fn observed_session_prompt_rows(audit_rows: &[AuditEventRow]) -> Vec<AuditEv
         }
         seen_exec_prompts.push(observed.clone());
         rows.push(AuditEventRow {
+            scope_id: None,
             id: format!(
                 "audit-codex-exec-prompt-{}-{}",
                 observed.timestamp_ms,
@@ -423,6 +425,7 @@ pub fn observed_session_prompt_rows(audit_rows: &[AuditEventRow]) -> Vec<AuditEv
             continue;
         };
         rows.push(AuditEventRow {
+            scope_id: None,
             id: format!(
                 "audit-agent-native-prompt-{}-{pid}",
                 sanitize_id(&session.display_id)
@@ -690,6 +693,7 @@ fn looks_like_codex_home_file(path: &Path) -> bool {
 fn session_row(session: &LocalSession) -> SessionRow {
     let updated_ms = updated_ms(session);
     SessionRow {
+        scope_id: None,
         id: view_id(session),
         agent_type: session.agent_type.clone(),
         start_timestamp_ms: session
@@ -723,6 +727,7 @@ fn token_rows(session: &LocalSession) -> Vec<TokenUsageRow> {
         .iter()
         .filter(|(_, usage)| usage.total_tokens > 0)
         .map(|(model, usage)| TokenUsageRow {
+            scope_id: None,
             id: format!("token-{session_id}-{}", sanitize_id(model)),
             llm_call_id: format!("{session_id}-{model}"),
             timestamp_ms: updated_ms(session),
@@ -749,6 +754,7 @@ fn tool_rows(session: &LocalSession) -> Vec<ToolCallRow> {
     for (tool, count) in &session.tools {
         for index in 0..*count {
             rows.push(ToolCallRow {
+                scope_id: None,
                 id: format!("tool-{session_id}-{}-{index}", sanitize_id(tool)),
                 session_id: Some(session_id.clone()),
                 conversation_id: session.conversation_id.clone(),
@@ -1071,6 +1077,7 @@ mod tests {
 
     fn exec_row(id: &str, timestamp_ms: u64, comm: &str, full_command: &str) -> AuditEventRow {
         AuditEventRow {
+            scope_id: None,
             id: id.to_string(),
             timestamp_ms,
             audit_type: "process".to_string(),
@@ -1087,6 +1094,7 @@ mod tests {
 
     fn file_row(id: &str, timestamp_ms: u64, path: &Path) -> AuditEventRow {
         AuditEventRow {
+            scope_id: None,
             id: id.to_string(),
             timestamp_ms,
             audit_type: "file".to_string(),
